@@ -1,0 +1,27 @@
+# Minimal working example configuration
+# This config uses only the filesystem server for demonstration
+
+[gateway]
+port = 3000
+web_ui = false
+log_level = "info"
+
+[routing]
+strategy = "tfidf"
+top_k = 5
+health_weight = 0.4
+
+[health]
+zombie_threshold_days = 7
+consecutive_failure_limit = 5
+degraded_score_penalty = 0.1
+
+[storage]
+db_path = "./example-sentinel.db"
+retention_days = 30
+
+# Single backend for minimal example (no API key needed)
+[backends.filesystem]
+transport = "stdio"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "."]
