@@ -1,0 +1,45 @@
+{
+ "meta": {
+  "model": "glm-5.3-flash (同模型同环境)",
+  "tasks": 6,
+  "identical_tasks": true,
+  "execution_backend": "同一网关后端(执行路径一致), 差异仅在工具发现方式"
+ },
+ "gateway": {
+  "static_tool_tokens": 576,
+  "visible_tools": 5,
+  "duration_s": 153.9,
+  "cli_cmds": 11,
+  "searches": 6,
+  "invokes": 5,
+  "task_success": "6/6",
+  "answers": {
+   "T1": "✓",
+   "T2": "✓",
+   "T3": "✓(经2次弯路后用directory_tree)",
+   "T4": "✓一次命中(查询已预混pull request关键词)",
+   "T5": "✓",
+   "T6": "✓ 62 bytes"
+  },
+  "notable": "T3 弯路: 2 次搜索被 github 工具淹没, 第3次改词命中; T6 成功(上轮因白名单误判为不可能)",
+  "errors": "1 (backslash JSON escape, 自修复)"
+ },
+ "direct": {
+  "static_tool_tokens": 7614,
+  "visible_tools": 53,
+  "duration_s": 100.5,
+  "cli_cmds": 6,
+  "searches": 1,
+  "invokes": 5,
+  "task_success": "6/6",
+  "answers": {
+   "T1": "✓",
+   "T2": "✓",
+   "T3": "✓(选了 list_directory_with_sizes, 顺带拿到 T6 答案)",
+   "T4": "✓(0 次调用, 直接从清单扫描得出)",
+   "T6": "✓ 62 bytes, 双重交叉验证"
+  },
+  "notable": "T3 的工具选择(带 sizes)顺带解决 T6 — 全量 schema 的'意外红利'; T4 无需任何调用",
+  "errors": "1 (backslash JSON escape, 自修复)"
+ }
+}

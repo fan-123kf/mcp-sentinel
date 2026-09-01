@@ -1,0 +1,18 @@
+{
+ "gateway": {
+  "total_cmds": 15,
+  "discovery_cmds": 8,
+  "invoke_cmds": 6,
+  "errors": 1,
+  "duration": "153.89",
+  "api_calls": "?"
+ },
+ "direct": {
+  "total_cmds": 7,
+  "discovery_cmds": 1,
+  "invoke_cmds": 5,
+  "errors": 1,
+  "duration": "100.48",
+  "api_calls": "?"
+ }
+}
