@@ -20,6 +20,10 @@ pub struct Tool {
     /// Used as an authoritative override for governance classification.
     #[serde(default)]
     pub annotations: Option<serde_json::Value>,
+    /// Human-readable display name some servers provide (may carry status
+    /// like "Deprecated"). Optional; used in the enriched index text.
+    #[serde(default)]
+    pub title: Option<String>,
     #[serde(skip)]
     pub tool_id: String,
     #[serde(skip)]

@@ -1,5 +1,6 @@
 use crate::backend::Tool;
 use crate::router::types::RankedTool;
+use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::RwLock;
 use unicode_segmentation::UnicodeSegmentation;
@@ -31,7 +32,47 @@ impl TfIdfIndex {
         let mut term_doc_count: HashMap<String, usize> = HashMap::new();
 
         for tool in tools {
-            let text = format!("{} {}", tool.name, tool.description);
+            // Enriched index text: server + title + name + description +
+            // parameter descriptions. Previously only name + description were
+            // indexed, which caused (a) cross-server confusion ("list files"
+            // matching github tools) and (b) parameter-level semantics being
+            // invisible (github ships 79 param descriptions we threw away).
+            let title = tool.title.as_deref().unwrap_or("");
+            let param_descs: Vec<String> = tool
+                .input_schema
+                .get("properties")
+                .and_then(|p| p.as_object())
+                .map(|props| {
+                    props
+                        .iter()
+                        .filter_map(|(pname, pv)| {
+                            let desc = pv.get("description").and_then(Value::as_str)?;
+                            Some(format!("{} {}", pname, desc))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            let required: Vec<&str> = tool
+                .input_schema
+                .get("required")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(Value::as_str).collect())
+                .unwrap_or_default();
+
+            let mut text = format!(
+                "{} {} {} {}",
+                tool.server_name.as_deref().unwrap_or(""),
+                title,
+                tool.name,
+                tool.description
+            );
+            if !required.is_empty() {
+                text.push_str(&format!(" required: {}", required.join(" ")));
+            }
+            if !param_descs.is_empty() {
+                text.push_str(&format!(" params: {}", param_descs.join("; ")));
+            }
+
             let terms = Self::tokenize(&text);
             let tf = Self::compute_tf(&terms);
 
@@ -189,6 +230,7 @@ mod tests {
                 input_schema: serde_json::json!({}),
                 tool_id: "github::create_issue".to_string(),
                 server_name: Some("github".to_string()),
+                title: None,
                 annotations: None,
             },
             Tool {
@@ -197,6 +239,7 @@ mod tests {
                 input_schema: serde_json::json!({}),
                 tool_id: "github::search_code".to_string(),
                 server_name: Some("github".to_string()),
+                title: None,
                 annotations: None,
             },
             Tool {
@@ -205,6 +248,7 @@ mod tests {
                 input_schema: serde_json::json!({}),
                 tool_id: "filesystem::read_file".to_string(),
                 server_name: Some("filesystem".to_string()),
+                title: None,
                 annotations: None,
             },
         ];
