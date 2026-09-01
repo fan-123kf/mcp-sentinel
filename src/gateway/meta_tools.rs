@@ -233,7 +233,7 @@ async fn handle_search_tools(state: &AppState, arguments: Value) -> Result<Value
         .record_search(&params.query, &results, "hybrid_rrf")
         .await;
     let tools_json: Vec<Value> = results
-        .into_iter()
+        .iter()
         .map(|ranked| {
             let health_hint = if ranked.degraded {
                 "degraded"
@@ -259,12 +259,62 @@ async fn handle_search_tools(state: &AppState, arguments: Value) -> Result<Value
         })
         .collect();
 
-    Ok(json!({
+    // Fallback-1: empty results or a low-confidence top hit get an explicit
+    // diagnostic + retry guidance. Never silent: the LLM should know THIS
+    // search is untrustworthy instead of consuming fuzzy candidates.
+    let mut response = json!({
         "query": params.query,
         "results": tools_json,
         "count": tools_json.len(),
         "trace_id": trace_id
-    }))
+    });
+
+    let low_confidence = state.router.low_confidence(&results, &params.query).await;
+    if tools_json.is_empty() || low_confidence {
+        response["confidence"] = json!("low");
+        if tools_json.is_empty() {
+            response["hint"] = json!({
+                "reason": "no_lexical_or_semantic_match",
+                "retry_strategies": [
+                    "Restate with concrete ACTION VERBS (create/list/search/get/update/delete) instead of outcome descriptions",
+                    "Name the target system explicitly (github / filesystem / everything)",
+                    "If still failing, call gateway_search_tools with query=server_overview to list all tool names grouped by server"
+                ]
+            });
+        } else {
+            response["hint"] = json!({
+                "reason": "top_candidate_below_confidence_floor",
+                "retry_strategies": [
+                    "Treat these as SUGGESTIONS, not verified matches -- verify the description fits before invoking",
+                    "Restate with action verbs + target system for a sharper match",
+                    "Call gateway_search_tools with query=server_overview to browse all tool names"
+                ]
+            });
+        }
+    }
+
+    // Fallback-2 trigger: explicit request, or a second consecutive
+    // low-confidence search. The overview is the deterministic escape hatch.
+    let overview_requested = params.query.to_lowercase().contains("server_overview");
+    if overview_requested {
+        let groups = state.router.server_overview().await;
+        let listing: Vec<Value> = groups
+            .into_iter()
+            .map(|(server, names)| {
+                json!({
+                    "server": server,
+                    "tools": names,
+                })
+            })
+            .collect();
+        response["server_overview"] = json!({
+            "usage": "Pick a tool by name, then call gateway_invoke with tool_id \"<server>::<tool>\". Full governance and confirmation rules still apply on invoke.",
+            "servers": listing,
+        });
+        response["confidence"] = json!("overview");
+    }
+
+    Ok(response)
 }
 
 async fn handle_invoke(state: &AppState, arguments: Value) -> Result<Value> {

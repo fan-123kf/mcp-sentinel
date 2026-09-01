@@ -58,8 +58,8 @@ pub(crate) fn enriched_text(tool: &Tool) -> String {
     text
 }
 
-const MODEL_DIR_ENV: &str = "FASTEMBED_MODEL_DIR";
-const DEFAULT_MODEL_DIR: &str = ".fastembed_cache/Xenova/bge-small-zh-v1.5";
+pub(crate) const MODEL_DIR_ENV: &str = "FASTEMBED_MODEL_DIR";
+pub(crate) const DEFAULT_MODEL_DIR: &str = ".fastembed_cache/Xenova/bge-small-zh-v1.5";
 
 struct Doc {
     tool: Tool,

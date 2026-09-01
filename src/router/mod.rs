@@ -1,3 +1,4 @@
+mod debug_cosine;
 mod embedding;
 mod hybrid;
 mod rerank;
@@ -219,5 +220,54 @@ impl SemanticRouter {
             .filter(|c| c.final_score > 0.0)
             .take(top_k)
             .collect()
+    }
+
+    /// Fallback-2 support: name-only listing of every indexed tool, grouped
+    /// by server. This is the deterministic escape hatch when semantic+lexical
+    /// retrieval both fail -- ~800 tokens for 53 tools, vs 7.6K for full
+    /// schemas. Governance/audit still apply on the subsequent invoke.
+    pub async fn server_overview(&self) -> Vec<(String, Vec<String>)> {
+        let mut groups: Vec<(String, Vec<String>)> = Vec::new();
+        let docs = self.schemas.read().unwrap();
+        let mut servers: Vec<String> = docs
+            .keys()
+            .filter_map(|id| id.split("::").next().map(|s| s.to_string()))
+            .collect();
+        servers.sort();
+        servers.dedup();
+        for server in servers {
+            let mut names: Vec<String> = docs
+                .keys()
+                .filter(|id| id.starts_with(&format!("{}::", server)))
+                .filter_map(|id| id.split("::").nth(1).map(|s| s.to_string()))
+                .collect();
+            names.sort();
+            groups.push((server, names));
+        }
+        groups
+    }
+
+    /// Fallback-1 signal: is the top candidate trustworthy?
+    ///
+    /// Primary signal = lexical corroboration: re-run the lexical lane on the
+    /// ORIGINAL query and require the top fused candidate to appear there.
+    /// The RRF fusion overwrites semantic_score with the fusion score, so a
+    /// nonzero value cannot prove the *lexical* lane matched (the embedding
+    /// lane also contributes). An embedding-only hit (no lexical
+    /// corroboration) is exactly the "confidently wrong" risk this flags.
+    pub async fn low_confidence(&self, results: &[RankedTool], query: &str) -> bool {
+        if results.is_empty() {
+            return true;
+        }
+        let top = &results[0];
+        !self.lexical_corroborated(top, query)
+    }
+
+    /// Does the lexical lane (re-run on the original query) return this tool?
+    fn lexical_corroborated(&self, top: &RankedTool, query: &str) -> bool {
+        self.index
+            .search(query, 5)
+            .iter()
+            .any(|t| t.tool_id == top.tool_id)
     }
 }
