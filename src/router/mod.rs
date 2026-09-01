@@ -1,5 +1,6 @@
 mod embedding;
 mod hybrid;
+mod rerank;
 mod tfidf;
 mod types;
 
@@ -7,9 +8,12 @@ pub use types::RankedTool;
 
 use self::embedding::EmbeddingIndex;
 use self::hybrid::{expand_query, reciprocal_rank_fusion};
+use self::rerank::{rerank_score, QueryFeatures, RerankWeights};
 use crate::backend::Tool;
 use crate::health::HealthManager;
-use std::sync::Arc;
+use serde_json::Value;
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
 use tfidf::TfIdfIndex;
 use tracing::{debug, info, warn};
 
@@ -18,6 +22,11 @@ pub struct SemanticRouter {
     embedding: Arc<EmbeddingIndex>,
     embedding_enabled: bool,
     health_manager: HealthManager,
+    rerank_weights: RerankWeights,
+    /// tool_id -> input_schema, stashed at index time for rerank features.
+    schemas: Arc<RwLock<HashMap<String, Value>>>,
+    /// Servers used recently in this process (session coherence signal).
+    last_servers: Arc<RwLock<Vec<String>>>,
 }
 
 impl SemanticRouter {
@@ -29,11 +38,22 @@ impl SemanticRouter {
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                 .unwrap_or(false),
             health_manager,
+            rerank_weights: RerankWeights::default(),
+            schemas: Arc::new(RwLock::new(HashMap::new())),
+            last_servers: Arc::new(RwLock::new(Vec::new())),
         }
     }
 
     pub async fn index_tools(&self, tools: Vec<Tool>) {
         debug!("Indexing {} tools for semantic search", tools.len());
+        // Stash schemas for the rerank pass before moving the vec along.
+        {
+            let mut schemas = self.schemas.write().unwrap();
+            schemas.clear();
+            for t in &tools {
+                schemas.insert(t.tool_id.clone(), t.input_schema.clone());
+            }
+        }
         self.index.build_index(tools.clone());
         debug!("TF-IDF index built successfully");
 
@@ -130,6 +150,34 @@ impl SemanticRouter {
             }
         }
 
+        // Feature rerank: blend the RRF rank with interpretable features
+        // (name overlap, description/param coverage, server coherence) to
+        // suppress confident-but-wrong semantic hits. Runs BEFORE the final
+        // sort so the health formula above and the tie-break below both see
+        // the reranked final_score.
+        {
+            let qf = QueryFeatures::new(query);
+            let schemas = self.schemas.read().unwrap();
+            let last_servers = self.last_servers.read().unwrap();
+            let n = candidates.len().max(1) as f64;
+            for (i, cand) in candidates.iter_mut().enumerate() {
+                // Normalized rank: RRF position mapped to 0..1 (best=1).
+                let norm_rank = 1.0 - (i as f64 / n);
+                let schema = schemas.get(&cand.tool_id).cloned().unwrap_or(Value::Null);
+                let input = rerank::RerankInput {
+                    tool_name: cand.tool_name.clone(),
+                    description: cand.description.clone(),
+                    schema,
+                    server_name: cand.server_name.clone(),
+                };
+                let features = input.features(&qf);
+                let same_server = last_servers.iter().any(|s| s == &cand.server_name);
+                cand.final_score =
+                    rerank_score(norm_rank, &features, same_server, &self.rerank_weights);
+            }
+            debug!("rerank applied over {} candidates", candidates.len());
+        }
+
         // Re-sort by final score and take top_k. Tie-break: when scores are
         // (near-)equal, prefer tools whose NAME contains a query token --
         // previously equal scores left ordering to hash-iteration randomness,
@@ -152,6 +200,18 @@ impl SemanticRouter {
                     .any(|t| b.tool_name.to_lowercase().contains(t));
                 b_name_hit.cmp(&a_name_hit)
             });
+        }
+
+        // Record servers of the returned tools for the session-coherence
+        // feature on subsequent searches.
+        {
+            let mut last = self.last_servers.write().unwrap();
+            last.clear();
+            for c in candidates.iter().take(top_k) {
+                if !c.server_name.is_empty() && !last.contains(&c.server_name) {
+                    last.push(c.server_name.clone());
+                }
+            }
         }
 
         candidates
