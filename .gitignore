@@ -18,3 +18,4 @@ sentinel.toml
 .vscode/
 Thumbs.db
 .DS_Store
+.fastembed_cache/
