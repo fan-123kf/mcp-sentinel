@@ -1,0 +1,38 @@
+# MCP Sentinel Configuration Example
+# Copy this file to sentinel.toml and configure for your environment
+
+[gateway]
+port = 3000
+web_ui = true
+log_level = "info"
+
+[routing]
+strategy = "tfidf"           # "tfidf" | "semantic" (future: embedding)
+top_k = 5
+health_weight = 0.4          # Health score weight in final ranking
+
+[health]
+zombie_threshold_days = 7    # Days without calls to mark as zombie
+consecutive_failure_limit = 5
+degraded_score_penalty = 0.1
+
+[storage]
+db_path = "~/.config/mcp-sentinel/sentinel.db"
+retention_days = 30
+
+# Example backend configurations
+[backends.github]
+transport = "stdio"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-github"]
+env = { GITHUB_TOKEN = "${GITHUB_TOKEN}" }
+
+[backends.filesystem]
+transport = "stdio"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+
+# [backends.linear]
+# transport = "http"
+# url = "http://localhost:4000/mcp"
+# auth = { type = "bearer", token = "${LINEAR_TOKEN}" }

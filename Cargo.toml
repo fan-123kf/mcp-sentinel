@@ -1,0 +1,49 @@
+[package]
+name = "mcp-sentinel"
+version = "0.1.0"
+edition = "2021"
+authors = ["MCP Sentinel Contributors"]
+description = "Intelligent MCP gateway with health-driven adaptive routing"
+license = "MIT"
+
+[dependencies]
+# Web server and async runtime
+tokio = { version = "1.40", features = ["full"] }
+axum = { version = "0.7", features = ["json", "macros"] }
+tower = "0.5"
+tower-http = { version = "0.5", features = ["fs", "trace", "cors"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+
+# Shell expansion for config
+shellexpand = "3.1"
+
+# Logging and tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Text processing for TF-IDF
+unicode-segmentation = "1.11"
+
+# Time handling
+chrono = { version = "0.4", features = ["serde"] }
+
+# Process management for stdio backends
+async-process = "2.3"
+
+# HTTP client for HTTP backends
+reqwest = { version = "0.12", features = ["json", "stream"] }
+
+# CLI
+clap = { version = "4.5", features = ["derive", "env"] }
+
+# Database (Week 2)
+rusqlite = { version = "0.31", features = ["bundled"] }
+tokio-rusqlite = "0.5"

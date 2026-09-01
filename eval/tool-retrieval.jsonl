@@ -1,0 +1,6 @@
+{"query":"create a GitHub issue","expected_tools":["github::create_issue"],"category":"exact_keyword"}
+{"query":"帮我登记一个线上故障","expected_tools":["github::create_issue","linear::create_issue"],"category":"synonym_expansion"}
+{"query":"读取本地配置文件","expected_tools":["filesystem::read_file"],"category":"chinese_intent"}
+{"query":"在仓库中查找认证实现","expected_tools":["github::search_code"],"category":"natural_language"}
+{"query":"删除过期的临时文件","expected_tools":["filesystem::delete_file"],"category":"destructive_operation"}
+{"query":"为登录需求生成测试用例","expected_tools":["testing::generate_cases","knowledge::search"],"category":"agent_workflow"}

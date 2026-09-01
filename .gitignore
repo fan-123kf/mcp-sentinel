@@ -1,0 +1,20 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+
+# Local runtime config (contains machine-specific paths / tokens)
+sentinel.toml
+
+# Local SQLite database
+*.db
+*.db-shm
+*.db-wal
+
+# Eval artifacts (kept out of repo; see EVAL_SUMMARY.md in the eval folder)
+/eval-output/
+
+# IDE / OS noise
+.idea/
+.vscode/
+Thumbs.db
+.DS_Store
