@@ -22,12 +22,12 @@ mod meta_tools;
 
 #[derive(Clone)]
 pub struct AppState {
-    config: Arc<Config>,
-    backend_manager: Arc<BackendManager>,
-    router: Arc<SemanticRouter>,
-    health_manager: HealthManager,
-    storage: Option<Arc<StorageManager>>,
-    traces: DecisionTraceStore,
+    pub config: Arc<Config>,
+    pub backend_manager: Arc<BackendManager>,
+    pub router: Arc<SemanticRouter>,
+    pub health_manager: HealthManager,
+    pub storage: Option<Arc<StorageManager>>,
+    pub traces: DecisionTraceStore,
 }
 
 #[derive(Debug, Deserialize)]

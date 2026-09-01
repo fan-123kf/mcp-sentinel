@@ -189,6 +189,7 @@ mod tests {
                 input_schema: serde_json::json!({}),
                 tool_id: "github::create_issue".to_string(),
                 server_name: Some("github".to_string()),
+                annotations: None,
             },
             Tool {
                 name: "search_code".to_string(),
@@ -196,6 +197,7 @@ mod tests {
                 input_schema: serde_json::json!({}),
                 tool_id: "github::search_code".to_string(),
                 server_name: Some("github".to_string()),
+                annotations: None,
             },
             Tool {
                 name: "read_file".to_string(),
@@ -203,6 +205,7 @@ mod tests {
                 input_schema: serde_json::json!({}),
                 tool_id: "filesystem::read_file".to_string(),
                 server_name: Some("filesystem".to_string()),
+                annotations: None,
             },
         ];
 

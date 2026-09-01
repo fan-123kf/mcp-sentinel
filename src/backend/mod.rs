@@ -6,7 +6,7 @@ pub use types::{BackendManager, Tool, ToolCall, ToolCallResult};
 
 use crate::config::{BackendConfig, Config};
 use crate::health::HealthManager;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -35,6 +35,11 @@ impl BackendManager {
                 BackendConfig::Stdio { command, args, env } => {
                     match stdio::StdioBackend::new(command, args, env.clone()).await {
                         Ok(backend) => {
+                            // MCP spec: initialize handshake before any other request.
+                            // Previously skipped -- broke protocol-strict servers.
+                            backend.initialize().await.with_context(|| {
+                                format!("Handshake failed for stdio backend {}", name)
+                            })?;
                             let tools = backend.list_tools().await?;
                             info!("Backend {} loaded {} tools", name, tools.len());
 
@@ -95,6 +100,23 @@ impl BackendManager {
         }
 
         all_tools
+    }
+
+    /// Look up MCP annotations for a tool_id ("server::tool"). Returns None
+    /// when the backend/tool doesn't exist or the server sent no annotations.
+    pub async fn tool_annotations(&self, tool_id: &str) -> Option<serde_json::Value> {
+        let parts: Vec<&str> = tool_id.splitn(2, "::").collect();
+        if parts.len() != 2 {
+            return None;
+        }
+        let backends = self.backends.read().await;
+        let backend = backends.get(parts[0])?;
+        backend
+            .tools
+            .iter()
+            .find(|t| t.name == parts[1])?
+            .annotations
+            .clone()
     }
 
     pub async fn invoke_tool(&self, tool_call: ToolCall) -> Result<ToolCallResult> {

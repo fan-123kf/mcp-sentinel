@@ -1,5 +1,6 @@
 use crate::backend::ToolCallResult;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -30,6 +31,40 @@ pub enum ErrorCategory {
 }
 
 impl ToolPolicy {
+    /// Authoritative classification from MCP tool annotations
+    /// (readOnlyHint / destructiveHint / idempotentHint). Servers that provide
+    /// annotations know their own side effects better than any name heuristic.
+    pub fn from_annotations(annotations: &Value, tool_id: &str) -> Option<Self> {
+        let obj = annotations.as_object()?;
+        let read_only = obj.get("readOnlyHint").and_then(Value::as_bool);
+        let destructive = obj.get("destructiveHint").and_then(Value::as_bool);
+
+        match (read_only, destructive) {
+            // Server explicitly claims read-only: trust it (Read, retry-safe).
+            (Some(true), _) => Some(Self {
+                side_effect: SideEffect::Read,
+                confirmation_required: false,
+                retry_safe: true,
+                max_attempts: 2,
+            }),
+            // Server explicitly claims destructive.
+            (_, Some(true)) => Some(Self {
+                side_effect: SideEffect::Destructive,
+                confirmation_required: true,
+                retry_safe: false,
+                max_attempts: 1,
+            }),
+            // Explicitly not read-only and not destructive => mutating (Write).
+            (Some(false), Some(false) | None) => Some(Self {
+                side_effect: SideEffect::Write,
+                confirmation_required: true,
+                retry_safe: false,
+                max_attempts: 1,
+            }),
+            _ => None,
+        }
+    }
+
     pub fn infer(tool_id: &str) -> Self {
         let name = tool_id
             .rsplit("::")
@@ -182,6 +217,42 @@ mod tests {
             assert_eq!(policy.side_effect, SideEffect::Read, "tool: {tool_id}");
             assert!(policy.authorize(false).is_ok(), "tool: {tool_id}");
         }
+    }
+
+    #[test]
+    fn annotations_override_name_heuristic() {
+        use serde_json::json;
+
+        // Server says read-only, but the name contains "delete": annotations win.
+        let p = ToolPolicy::from_annotations(
+            &json!({"readOnlyHint": true, "destructiveHint": false}),
+            "fs::delete_cache_file",
+        )
+        .expect("annotations present");
+        assert_eq!(p.side_effect, SideEffect::Read);
+        assert!(p.authorize(false).is_ok());
+
+        // Server says destructive even though the name looks innocent.
+        let p = ToolPolicy::from_annotations(
+            &json!({"readOnlyHint": false, "destructiveHint": true}),
+            "fs::sync_data",
+        )
+        .expect("annotations present");
+        assert_eq!(p.side_effect, SideEffect::Destructive);
+        assert!(p.authorize(false).is_err());
+
+        // Server says mutating but not destructive => Write.
+        let p = ToolPolicy::from_annotations(
+            &json!({"readOnlyHint": false, "destructiveHint": false}),
+            "fs::gzip_file_as_resource",
+        )
+        .expect("annotations present");
+        assert_eq!(p.side_effect, SideEffect::Write);
+        assert!(p.authorize(false).is_err());
+
+        // No hints at all => fall back to heuristic.
+        assert!(ToolPolicy::from_annotations(&json!({}), "anything").is_none());
+        assert!(ToolPolicy::from_annotations(&json!(null), "anything").is_none());
     }
 
     #[test]

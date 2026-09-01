@@ -80,6 +80,44 @@ impl StdioBackend {
         })
     }
 
+    /// Perform the MCP initialize handshake required by the spec before any
+    /// other request. Previously skipped, which broke protocol-strict servers
+    /// (and emitted "Unknown method" errors for the initialized notification).
+    pub async fn initialize(&self) -> Result<Value> {
+        // 1) initialize request
+        let result = self
+            .send_request(
+                "initialize",
+                Some(json!({
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": { "name": "mcp-sentinel", "version": env!("CARGO_PKG_VERSION") }
+                })),
+            )
+            .await?;
+
+        // 2) initialized notification (no id, no response expected)
+        {
+            let notification = json!({
+                "jsonrpc": "2.0",
+                "method": "notifications/initialized"
+            });
+            let mut stdin = self.stdin_writer.lock().await;
+            stdin
+                .write_all(serde_json::to_string(&notification)?.as_bytes())
+                .await
+                .context("Failed to write initialized notification")?;
+            stdin
+                .write_all(b"\n")
+                .await
+                .context("Failed to write newline")?;
+            stdin.flush().await.context("Failed to flush stdin")?;
+        }
+
+        debug!("stdio backend initialized: {:?}", result.get("serverInfo"));
+        Ok(result)
+    }
+
     async fn send_request(&self, method: &str, params: Option<Value>) -> Result<Value> {
         let mut id_counter = self.next_id.lock().await;
         let id = *id_counter;

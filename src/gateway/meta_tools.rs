@@ -269,7 +269,27 @@ async fn handle_search_tools(state: &AppState, arguments: Value) -> Result<Value
 
 async fn handle_invoke(state: &AppState, arguments: Value) -> Result<Value> {
     let params: InvokeParams = serde_json::from_value(arguments)?;
-    let policy = ToolPolicy::infer(&params.tool_id);
+
+    // Governance: prefer the server's own MCP annotations (authoritative),
+    // fall back to the name heuristic only when annotations are absent.
+    let annotations = state
+        .backend_manager
+        .tool_annotations(&params.tool_id)
+        .await;
+    let policy = match annotations.as_ref() {
+        Some(a) => {
+            let p = ToolPolicy::from_annotations(a, &params.tool_id)
+                .unwrap_or_else(|| ToolPolicy::infer(&params.tool_id));
+            debug!(tool_id = %params.tool_id, side_effect = ?p.side_effect, "policy from server annotations");
+            p
+        }
+        None => {
+            let p = ToolPolicy::infer(&params.tool_id);
+            debug!(tool_id = %params.tool_id, side_effect = ?p.side_effect, "policy from name heuristic");
+            p
+        }
+    };
+
     policy
         .authorize(params.confirmed)
         .map_err(anyhow::Error::msg)?;

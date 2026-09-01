@@ -15,6 +15,11 @@ pub struct Tool {
     pub description: String,
     #[serde(rename = "inputSchema")]
     pub input_schema: serde_json::Value,
+    /// MCP tool annotations from the server (readOnlyHint, destructiveHint,
+    /// idempotentHint, openWorldHint). Optional: older/loose servers omit them.
+    /// Used as an authoritative override for governance classification.
+    #[serde(default)]
+    pub annotations: Option<serde_json::Value>,
     #[serde(skip)]
     pub tool_id: String,
     #[serde(skip)]
