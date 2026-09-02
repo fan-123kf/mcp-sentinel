@@ -58,11 +58,17 @@ Agent 看到的不是 50 个具体工具，而是 **5 个稳定的元工具**：
 
 `SemanticRouter` 在每次检索时：
 
-1. **双路召回**：
-   - 路径 A：原始查询的 TF-IDF 余弦相似度（精确关键词命中）
-   - 路径 B：经同义词扩展（含中英文常见意图，如"缺陷"→bug/issue/defect、"读取"→read/file）的 TF-IDF
-2. **Reciprocal Rank Fusion (RRF, k=60)**：融合两条候选排名（无需可比分数尺度）
-3. **健康感知重排**：
+1. **BGE-M3 稀疏检索**（ Learned Lexical）：
+   - BGE-M3 一次前向同时输出 token indices + weights 的稀疏向量
+   - 替换：TF-IDF + 同义词扩展（自动覆盖中英跨语言意图）
+2. **BGE-M3 稠密检索**（Semantic）：
+   - 1024 维 L2 归一化向量，余弦相似度
+   - 一次前向同时完成，无需独立 embedding 模型
+3. **Reciprocal Rank Fusion (RRF, k=60)**：融合两路排名（无需可比分数尺度）
+4. **Cross-Encoder 重排**（可选）：
+   - bge-reranker-v2-m3 对 top-20 候选精排
+   - 端到端训练模型，显著优于特征规则
+5. **健康感知重排**：
 
 ```text
 final_score = semantic_score × (1 - w + w × health_penalty)

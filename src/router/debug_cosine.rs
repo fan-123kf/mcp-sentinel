@@ -57,10 +57,18 @@ fn debug_cosine_scores() {
         "flibberty gibbet wobble xyzzy",
         "create a github issue",
     ] {
-        let r = index.search_ranked(q, 3).expect("search");
+        // Inspect both dense and sparse lanes -- useful for diagnosing
+        // semantic vs lexical disagreement.
+        let dense = index.search_dense(q, 3).expect("dense");
+        let sparse = index.search_sparse(q, 3).expect("sparse");
         eprintln!("query: {q}");
-        for (id, rt) in &r {
-            eprintln!("  {} {:.4}", rt.tool_id, rt.semantic_score);
+        eprintln!("  dense:");
+        for (id, rt) in &dense {
+            eprintln!("    {} {:.4}", rt.tool_id, rt.semantic_score);
+        }
+        eprintln!("  sparse:");
+        for (id, rt) in &sparse {
+            eprintln!("    {} {:.4}", rt.tool_id, rt.semantic_score);
         }
     }
 }

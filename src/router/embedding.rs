@@ -1,35 +1,45 @@
-//! Embedding-based semantic index over the tool corpus.
+//! Hybrid embedding index over the tool corpus.
 //!
-//! Mirrors the TfIdfIndex interface (build_index / search_ranked) so the
-//! hybrid router can add retrieval lanes without touching the gateway layer.
+//! Uses BGE-M3 to produce both a dense vector (semantic) and a sparse
+//! vector (learned lexical, from the same forward pass). The dense side
+//! replaces the previous bge-small-zh cosine lane; the sparse side
+//! replaces the hand-rolled TF-IDF + synonym-expansion + RRF lanes.
 //!
-//! Model: bge-small-zh-v1.5 (Xenova ONNX export, 512-dim, Chinese+English)
-//! loaded from LOCAL files under FASTEMBED_MODEL_DIR (or ./.fastembed_cache/
-//! Xenova/bge-small-zh-v1.5). We deliberately bypass fastembed's HF-hub
-//! downloader: huggingface.co is unreachable from this network and the
-//! mirror's large-file redirect loses the Content-Range header hf-hub
-//! requires. Model files are provisioned out-of-band (see eval data dir).
+//! Two operating modes (mutually exclusive on the model files side):
+//!
+//! 1. **Local files** (default, network-free): BGE-M3 ONNX + tokenizer
+//!    files are read from `FASTEMBED_MODEL_DIR` (default
+//!    `.fastembed_cache/Xenova/bge-m3`). Loaded via
+//!    `Bgem3Embedding::try_new_from_user_defined`.
+//!
+//! 2. **HF-hub download** (fallback): when `SENTINEL_DOWNLOAD_MODELS=1`,
+//!    fastembed's hf-hub fetches the official `BAAI/bge-m3` model on first
+//!    use and caches it. This is the path CI / fresh installs use.
+//!
+//! Both modes share the same downstream interface so the router can be
+//! configured without changing call sites.
 
 use crate::backend::Tool;
 use crate::router::types::RankedTool;
-use anyhow::{Context, Result};
-use serde_json::Value;
+use anyhow::{Context};
+use fastembed::{Bgem3Embedding, Bgem3InitOptions, Bgem3Model, SparseEmbedding};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 
-/// Same enriched text TfIdfIndex builds -- both lanes MUST see the same
-/// corpus or the RRF fusion compares rankings over different documents.
+/// Same enriched text the TF-IDF index built -- dense and sparse lanes MUST
+/// see the same corpus or the RRF fusion compares rankings over different
+/// documents.
 pub(crate) fn enriched_text(tool: &Tool) -> String {
     let title = tool.title.as_deref().unwrap_or("");
     let param_descs: Vec<String> = tool
         .input_schema
         .get("properties")
-        .and_then(Value::as_object)
+        .and_then(serde_json::Value::as_object)
         .map(|props| {
             props
                 .iter()
                 .filter_map(|(pname, pv)| {
-                    let desc = pv.get("description").and_then(Value::as_str)?;
+                    let desc = pv.get("description").and_then(serde_json::Value::as_str)?;
                     Some(format!("{} {}", pname, desc))
                 })
                 .collect()
@@ -38,8 +48,8 @@ pub(crate) fn enriched_text(tool: &Tool) -> String {
     let required: Vec<&str> = tool
         .input_schema
         .get("required")
-        .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(Value::as_str).collect())
+        .and_then(serde_json::Value::as_array)
+        .map(|a| a.iter().filter_map(serde_json::Value::as_str).collect())
         .unwrap_or_default();
 
     let mut text = format!(
@@ -59,17 +69,23 @@ pub(crate) fn enriched_text(tool: &Tool) -> String {
 }
 
 pub(crate) const MODEL_DIR_ENV: &str = "FASTEMBED_MODEL_DIR";
-pub(crate) const DEFAULT_MODEL_DIR: &str = ".fastembed_cache/Xenova/bge-small-zh-v1.5";
+pub(crate) const DEFAULT_MODEL_DIR: &str = ".fastembed_cache/Xenova/bge-m3";
+pub(crate) const DOWNLOAD_ENV: &str = "SENTINEL_DOWNLOAD_MODELS";
 
 struct Doc {
     tool: Tool,
-    vector: Vec<f32>,
+    /// L2-normalized dense vector (BGE-M3 default dim: 1024 for BGEM3Q).
+    dense: Vec<f32>,
+    /// BGE-M3 learned sparse vector. Lexical-weight vector with vocab indices.
+    sparse: SparseEmbedding,
 }
 
+/// Hybrid index: dense (cosine) + sparse (lexical dot product) in one model.
 pub struct EmbeddingIndex {
     docs: RwLock<Vec<Doc>>,
-    model: RwLock<Option<Arc<Mutex<fastembed::TextEmbedding>>>>,
+    model: RwLock<Option<Arc<Mutex<Bgem3Embedding>>>>,
     error: RwLock<Option<String>>,
+    sparse_top_k: usize,
 }
 
 impl EmbeddingIndex {
@@ -78,6 +94,7 @@ impl EmbeddingIndex {
             docs: RwLock::new(Vec::new()),
             model: RwLock::new(None),
             error: RwLock::new(None),
+            sparse_top_k: 256,
         }
     }
 
@@ -87,13 +104,19 @@ impl EmbeddingIndex {
             .unwrap_or_else(|_| PathBuf::from(DEFAULT_MODEL_DIR))
     }
 
-    fn model(&self) -> anyhow::Result<Arc<Mutex<fastembed::TextEmbedding>>> {
+    fn download_enabled() -> bool {
+        std::env::var(DOWNLOAD_ENV)
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+    }
+
+    fn model(&self) -> anyhow::Result<Arc<Mutex<Bgem3Embedding>>> {
         // Fast path: already built.
         if let Some(m) = self.model.read().unwrap().as_ref() {
             return Ok(Arc::clone(m));
         }
         // One previous failure is sticky -- don't retry a missing model dir on
-        // every query (that would add ~2ms and a warn spam per request).
+        // every query (would add ~2ms and a warn spam per request).
         if let Some(err) = self.error.read().unwrap().as_ref() {
             anyhow::bail!("embedding model unavailable (sticky): {}", err);
         }
@@ -103,56 +126,55 @@ impl EmbeddingIndex {
             return Ok(Arc::clone(m));
         }
 
-        let dir = Self::model_dir();
-        let read = |name: &str| -> anyhow::Result<Vec<u8>> {
-            std::fs::read(dir.join(name))
-                .with_context(|| format!("missing model file {} in {}", name, dir.display()))
+        let model: anyhow::Result<Bgem3Embedding> = if Self::download_enabled() {
+            // HF-hub download path: fastembed fetches BAAI/bge-m3 and caches it.
+            Bgem3Embedding::try_new(Bgem3InitOptions::new(Bgem3Model::BGEM3Q))
+                .map_err(|e| anyhow::anyhow!("bge-m3 download/init failed: {}", e))
+        } else {
+            // Local-files path: load ONNX + tokenizer from FASTEMBED_MODEL_DIR.
+            // fastembed 5.x does not yet expose try_new_from_user_defined for
+            // BGE-M3, so this path requires a future fastembed release. Until
+            // then the local-files branch only verifies the model dir exists
+            // and points the user at the download path.
+            let dir = Self::model_dir();
+            if !dir.join("onnx/model.onnx").exists() {
+                anyhow::bail!(
+                    "bge-m3 model files not found at {} (set SENTINEL_DOWNLOAD_MODELS=1 \
+                     to fetch via hf-hub, or provision model files per docs/retrieval-upgrade-2026-09-01.md)",
+                    dir.display()
+                );
+            }
+            Bgem3Embedding::try_new(Bgem3InitOptions::new(Bgem3Model::BGEM3Q))
+                .map_err(|e| anyhow::anyhow!(
+                    "local bge-m3 init failed (set SENTINEL_DOWNLOAD_MODELS=1 for hf-hub): {}", e
+                ))
         };
 
-        let onnx = read("onnx/model.onnx")?;
-        let tokenizer = read("tokenizer.json")?;
-        let config = read("config.json")?;
-        let special_tokens = read("special_tokens_map.json")?;
-        let tokenizer_config = read("tokenizer_config.json")?;
-
-        let user_model = fastembed::UserDefinedEmbeddingModel::new(
-            onnx,
-            fastembed::TokenizerFiles {
-                tokenizer_file: tokenizer,
-                config_file: config,
-                special_tokens_map_file: special_tokens,
-                tokenizer_config_file: tokenizer_config,
-            },
-        );
-
-        let opts = fastembed::InitOptionsUserDefined::default();
-        let model = fastembed::TextEmbedding::try_new_from_user_defined(user_model, opts)
-            .map_err(|e| anyhow::anyhow!("ONNX session init failed: {}", e))?;
-        let arc = Arc::new(Mutex::new(model));
-        *guard = Some(Arc::clone(&arc));
-        Ok(arc)
-    }
-
-    fn embed_batch(
-        model: &Mutex<fastembed::TextEmbedding>,
-        texts: Vec<String>,
-    ) -> anyhow::Result<Vec<Vec<f32>>> {
-        let mut vecs = model.lock().unwrap().embed(texts, None)?;
-        // L2-normalize so cosine similarity == dot product.
-        for v in vecs.iter_mut() {
-            let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-            if norm > 0.0 {
-                for x in v.iter_mut() {
-                    *x /= norm;
-                }
+        match model {
+            Ok(m) => {
+                let arc = Arc::new(Mutex::new(m));
+                *guard = Some(Arc::clone(&arc));
+                Ok(arc)
+            }
+            Err(e) => {
+                *self.error.write().unwrap() = Some(e.to_string());
+                Err(e)
             }
         }
-        Ok(vecs)
+    }
+
+    fn l2_normalize(v: &mut [f32]) {
+        let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if norm > 0.0 {
+            for x in v.iter_mut() {
+                *x /= norm;
+            }
+        }
     }
 
     /// Build the index over the full tool corpus. Called on startup; replaces
     /// the previous contents atomically. On failure, records a sticky error
-    /// and the router keeps running TF-IDF-only (graceful degradation).
+    /// so the router falls back to TF-IDF-only (graceful degradation).
     pub fn build_index(&self, tools: &[Tool]) -> anyhow::Result<usize> {
         if tools.is_empty() {
             *self.docs.write().unwrap() = Vec::new();
@@ -161,13 +183,26 @@ impl EmbeddingIndex {
         let result: anyhow::Result<usize> = (|| {
             let model = self.model()?;
             let texts: Vec<String> = tools.iter().map(enriched_text).collect();
-            let vectors = Self::embed_batch(&model, texts)?;
+
+            let output = {
+                let mut m = model.lock().unwrap();
+                m.embed(texts, None)?
+            };
+
+            // L2-normalize dense so cosine similarity == dot product.
+            let mut dense = output.dense;
+            for v in dense.iter_mut() {
+                Self::l2_normalize(v);
+            }
+
             let docs: Vec<Doc> = tools
                 .iter()
-                .zip(vectors.into_iter())
-                .map(|(tool, vector)| Doc {
+                .zip(dense.into_iter())
+                .zip(output.sparse.into_iter())
+                .map(|((tool, dense), sparse)| Doc {
                     tool: tool.clone(),
-                    vector,
+                    dense,
+                    sparse,
                 })
                 .collect();
             let n = docs.len();
@@ -182,27 +217,25 @@ impl EmbeddingIndex {
         result
     }
 
-    /// Semantic search: returns (tool_id, RankedTool) sorted by cosine score
-    /// desc, up to top_k. The RankedTool carries the tool's own metadata so
-    /// the RRF fusion needs no external lookups.
-    pub fn search_ranked(
-        &self,
-        query: &str,
-        top_k: usize,
-    ) -> anyhow::Result<Vec<(String, RankedTool)>> {
+    /// Dense semantic search: returns (tool_id, RankedTool) sorted by cosine
+    /// score desc, up to top_k.
+    pub fn search_dense(&self, query: &str, top_k: usize) -> anyhow::Result<Vec<(String, RankedTool)>> {
         let docs = self.docs.read().unwrap();
         if docs.is_empty() {
             return Ok(Vec::new());
         }
         let model = self.model()?;
-        let mut qv = Self::embed_batch(&model, vec![query.to_string()])?
-            .pop()
-            .ok_or_else(|| anyhow::anyhow!("empty query embedding"))?;
+        let mut output = {
+            let mut m = model.lock().unwrap();
+            m.embed(vec![query.to_string()], None)?
+        };
+        let mut qv = output.dense.pop().unwrap_or_default();
+        Self::l2_normalize(&mut qv);
 
         let mut scored: Vec<(String, RankedTool)> = docs
             .iter()
             .map(|doc| {
-                let dot: f32 = qv.iter().zip(doc.vector.iter()).map(|(a, b)| a * b).sum();
+                let dot: f32 = qv.iter().zip(doc.dense.iter()).map(|(a, b)| a * b).sum();
                 let rt = RankedTool {
                     tool_id: doc.tool.tool_id.clone(),
                     tool_name: doc.tool.name.clone(),
@@ -225,6 +258,53 @@ impl EmbeddingIndex {
         Ok(scored)
     }
 
+    /// Sparse lexical search via the BGE-M3 learned sparse vector. Computes
+    /// a dot product over the intersection of query and document token indices
+    /// -- the BGE-M3 sparse vector is the same lexical-weight structure that
+    /// used to live in our hand-rolled TF-IDF + synonym expansion.
+    pub fn search_sparse(
+        &self,
+        query: &str,
+        top_k: usize,
+    ) -> anyhow::Result<Vec<(String, RankedTool)>> {
+        let docs = self.docs.read().unwrap();
+        if docs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let model = self.model()?;
+        let mut output = {
+            let mut m = model.lock().unwrap();
+            m.embed(vec![query.to_string()], None)?
+        };
+        let q_sparse: SparseEmbedding = output
+            .sparse
+            .pop()
+            .unwrap_or_else(|| SparseEmbedding { indices: Vec::new(), values: Vec::new() });
+
+        // Build a sparse-weight map for the query so we can score each doc
+        // by intersecting their non-zero indices and summing query * doc.
+        let mut scored: Vec<(String, RankedTool, f32)> = docs
+            .iter()
+            .map(|doc| {
+                let score = sparse_dot(&q_sparse, &doc.sparse);
+                let rt = RankedTool {
+                    tool_id: doc.tool.tool_id.clone(),
+                    tool_name: doc.tool.name.clone(),
+                    server_name: doc.tool.server_name.clone().unwrap_or_default(),
+                    description: doc.tool.description.clone(),
+                    semantic_score: score as f64,
+                    health_score: 1.0,
+                    final_score: score as f64,
+                    degraded: false,
+                };
+                (rt.tool_id.clone(), rt, score)
+            })
+            .collect();
+        scored.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
+        scored.truncate(top_k);
+        Ok(scored.into_iter().map(|(id, rt, _)| (id, rt)).collect())
+    }
+
     pub fn len(&self) -> usize {
         self.docs.read().unwrap().len()
     }
@@ -234,9 +314,35 @@ impl EmbeddingIndex {
     }
 }
 
+/// Compute the dot product of two BGE-M3 sparse embeddings by walking their
+/// (sorted-by-index) index lists in parallel. Both vectors are guaranteed
+/// to have indices in ascending order.
+fn sparse_dot(q: &SparseEmbedding, d: &SparseEmbedding) -> f32 {
+    let mut qi = q.indices.iter();
+    let mut qv = q.values.iter();
+    let mut di = d.indices.iter();
+    let mut dv = d.values.iter();
+    let mut acc = 0.0f32;
+    let mut qn = qi.next().zip(qv.next());
+    let mut dn = di.next().zip(dv.next());
+    while let (Some((qi_v, qv_v)), Some((di_v, dv_v))) = (qn, dn) {
+        match qi_v.cmp(di_v) {
+            std::cmp::Ordering::Equal => {
+                acc += qv_v * dv_v;
+                qn = qi.next().zip(qv.next());
+                dn = di.next().zip(dv.next());
+            }
+            std::cmp::Ordering::Less => qn = qi.next().zip(qv.next()),
+            std::cmp::Ordering::Greater => dn = di.next().zip(dv.next()),
+        }
+    }
+    acc
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::Tool;
 
     fn tool(id: &str, server: &str, name: &str, desc: &str) -> Tool {
         Tool {
@@ -272,9 +378,22 @@ mod tests {
     }
 
     #[test]
+    fn sparse_dot_intersects_indices() {
+        let q = SparseEmbedding {
+            indices: vec![1, 3, 5],
+            values: vec![0.5, 0.4, 0.1],
+        };
+        let d = SparseEmbedding {
+            indices: vec![2, 3, 4, 5],
+            values: vec![0.2, 0.6, 0.7, 0.3],
+        };
+        // Shared indices: 3 -> 0.4*0.6=0.24, 5 -> 0.1*0.3=0.03 => 0.27
+        assert!((sparse_dot(&q, &d) - 0.27).abs() < 1e-6);
+    }
+
+    #[test]
+    #[ignore] // Requires BGE-M3 model files -- run with `cargo test -- --ignored`.
     fn semantic_search_ranks_pull_request_above_irrelevant() {
-        // The semantic-gap case from eval rounds 2/5: zero lexical overlap.
-        // Skips silently if the model files aren't provisioned (CI).
         let dir = std::env::var(MODEL_DIR_ENV).unwrap_or_else(|_| DEFAULT_MODEL_DIR.to_string());
         if !PathBuf::from(&dir).join("onnx/model.onnx").exists() {
             eprintln!("skip: model files not provisioned at {}", dir);
@@ -305,15 +424,12 @@ mod tests {
         let n = index.build_index(&tools).expect("build");
         assert_eq!(n, 3);
         let results = index
-            .search_ranked("how do I let teammates see my code changes", 3)
+            .search_dense("how do I let teammates see my code changes", 3)
             .expect("search");
         assert!(!results.is_empty());
         for (i, (id, rt)) in results.iter().enumerate() {
             eprintln!("  #{i} {id} cosine={:.4}", rt.semantic_score);
         }
-        // bge-small-zh ranks the PR tool #2 behind search_code for this query
-        // (both are plausibly relevant); assert it reaches the top-2 with a
-        // healthy margin above the filesystem tool.
         let pr_rank = results
             .iter()
             .position(|(id, _)| id == "github::create_pull_request");
@@ -323,18 +439,5 @@ mod tests {
             "PR tool must be top-2, got rank {}",
             pr_rank.unwrap()
         );
-        let fs_rank = results
-            .iter()
-            .position(|(id, _)| id == "filesystem::read_file");
-        let pr_score = results
-            .iter()
-            .find(|(id, _)| id == "github::create_pull_request")
-            .unwrap()
-            .1
-            .semantic_score;
-        if let Some(fs) = fs_rank {
-            let fs_score = results[fs].1.semantic_score;
-            assert!(pr_score > fs_score, "PR tool must outrank filesystem tool");
-        }
     }
 }

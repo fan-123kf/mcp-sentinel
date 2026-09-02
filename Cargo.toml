@@ -47,4 +47,4 @@ clap = { version = "4.5", features = ["derive", "env"] }
 # Database (Week 2)
 rusqlite = { version = "0.31", features = ["bundled"] }
 tokio-rusqlite = "0.5"
-fastembed = { version = "5", default-features = false, features = ["hf-hub-native-tls", "ort-download-binaries"] }
+fastembed = { version = "5", features = ["hf-hub", "hf-hub-native-tls"] }

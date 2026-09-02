@@ -1,7 +1,10 @@
 # mcp-sentinel 检索系统改造实录：缺陷、方案与数据流
 
-**日期**: 2026-09-01
+**日期**: 2026-09-01（第1版），2026-09-02（第2版升级）
 **范围**: 检索层（`src/router/`）的全部改动——从 TF-IDF 双路检索升级为"词法 + 语义 + 特征重排"的混合管线
+
+> **第2版升级（2026-09-02）**：TF-IDF + 同义词扩展已被 BGE-M3 稀疏+稠密双路替代，特征重排已被 Cross-Encoder 替代。具体改动见附录 A。
+
 **关联提交**: `37761f4` → `f67340b` → `d65cf0f` → `13bfc33`（GitHub fan-123kf/mcp-sentinel）
 **效果**: 17 条核心查询实测 R@1 从 33% → 47%，R@5 从 57% → 82%
 
@@ -214,3 +217,126 @@ src/router/tfidf.rs      # 索引文本增强（六段拼接）
 src/backend/types.rs     # Tool 结构加 title 字段
 Cargo.toml               # fastembed 5 (ort-download-binaries)
 ```
+
+---
+
+## 附录 A：第2版升级（2026-09-02）——TF-IDF + 特征重排 → BGE-M3 + Cross-Encoder
+
+### A.1 升级动机
+
+TF-IDF + 同义词扩展 + 特征重排存在三个结构性问题：
+
+| 问题 | 根因 |
+|------|------|
+| 同义词表 11 条硬编码，覆盖有限 | 无法覆盖中文意图到工具动作的全量映射 |
+| 特征重排权重（0.45/0.30/0.10）是工程判断，无数据标定 | name_overlap 等规则是启发式的，不如端到端训练模型 |
+| TF-IDF 词法路与 embedding 语义路有重叠 | 词法/同义词/embedding 干的本质是一件事，RRF 融合不够优雅 |
+
+### A.2 升级方案
+
+```
+用户查询
+    │
+    ▼
+┌─────────────────────────────────────┐
+│  BGE-M3 Sparse Lane (Learned Lexical) │
+│  一次前向输出：token indices + weights    │
+│  替换：TF-IDF + 同义词扩展 + 词法 RRF   │
+└─────────────────────────────────────┘
+    │  top-K 候选
+    ▼
+┌─────────────────────────────────────┐
+│  BGE-M3 Dense Lane (Semantic)          │
+│  1024 维 L2 归一化向量，余弦相似度    │
+│  替换：bge-small-zh 独立 embedding 路   │
+└─────────────────────────────────────┘
+    │  候选合并
+    ▼
+┌─────────────────────────────────────┐
+│  Reciprocal Rank Fusion (k=60)          │
+│  融合稀疏 + 稠密两路排名              │
+└─────────────────────────────────────┘
+    │  top-N 候选 (N=20)
+    ▼
+┌─────────────────────────────────────┐
+│  Cross-Encoder Rerank (bge-reranker-v2-m3) │
+│  替换：特征重排 (name_overlap/desc_overlap) │
+│  效果：端到端训练，远优于启发式规则    │
+└─────────────────────────────────────┘
+    │
+    ▼
+  最终 top-K + 健康分重排
+```
+
+### A.3 技术选型
+
+| 组件 | 选型 | 理由 |
+|------|------|------|
+| Embedding 模型 | **BGE-M3** (`Bgem3Embedding`) | 一次前向同时输出 dense + sparse，无需两个模型 |
+| Reranker | **bge-reranker-v2-m3** (`TextRerank`) | 多语言 Cross-Encoder，专门训练的重排模型 |
+| 向量库 | 内存 (无需 FAISS) | 工具数 ~50，不需要外部向量库 |
+| 模型加载 | HF-hub 下载 或 本地文件 | 通过 `SENTINEL_DOWNLOAD_MODELS=1` 启用下载 |
+
+### A.4 环境变量
+
+| 环境变量 | 默认值 | 说明 |
+|----------|--------|------|
+| `SENTINEL_EMBEDDING` | `0` | 设为 `1` 启用 BGE-M3 embedding 检索 |
+| `SENTINEL_DOWNLOAD_MODELS` | `0` | 设为 `1` 通过 hf-hub 下载模型（需网络） |
+| `FASTEMBED_MODEL_DIR` | `.fastembed_cache/Xenova/bge-m3` | 本地模型文件路径 |
+
+### A.5 模型文件（待下载/预置）
+
+```
+.fastembed_cache/
+└── Xenova/
+    ├── bge-m3/
+    │   ├── onnx/model.onnx           (~600MB)
+    │   ├── tokenizer.json
+    │   ├── config.json
+    │   ├── special_tokens_map.json
+    │   └── tokenizer_config.json
+    └── bge-reranker-v2-m3/
+        ├── onnx/model.onnx            (~300MB)
+        ├── tokenizer.json
+        ├── config.json
+        ├── special_tokens_map.json
+        └── tokenizer_config.json
+```
+
+使用 `SENTINEL_DOWNLOAD_MODELS=1` 启动时，fastembed 会自动从 HuggingFace 下载并缓存。
+
+### A.6 降级路径
+
+若 BGE-M3 模型未就绪，网关自动回退到纯 TF-IDF 模式，不阻塞启动：
+
+```
+index_tools() 失败 → 记录 sticky error
+search() 时发现 embedding.is_empty() → 直接走 fallback_tfidf 路线
+```
+
+若 Cross-Encoder 未就绪，RRF 融合结果直接进入健康分重排，不执行 rerank 步骤。
+
+### A.7 第2版改动文件清单
+
+```
+src/router/embedding.rs   # [重构] TextEmbedding → Bgem3Embedding, 支持 dense+sparse 双搜索
+src/router/cross_encoder.rs  # [新增] TextRerank Cross-Encoder 重排
+src/router/hybrid.rs     # [精简] 移除同义词扩展，保留 RRF
+src/router/rerank.rs     # [简化] 特征重排降为权重存根，保留配置兼容性
+src/router/mod.rs        # [重构] search() 整合 5 阶段管线
+src/router/debug_cosine.rs # [更新] search_ranked → search_dense + search_sparse
+Cargo.toml               # fastembed 5 (hf-hub 特性启用)
+docs/retrieval-upgrade-2026-09-01.md  # [补充] 本附录 A
+```
+
+### A.8 与第1版对比
+
+| 维度 | 第1版 | 第2版 |
+|------|-------|-------|
+| 稀疏检索 | TF-IDF + 11条同义词表 | BGE-M3 Learned Sparse (端到端) |
+| 稠密检索 | bge-small-zh (512维) | BGE-M3 Dense (1024维, 一次前向) |
+| 重排 | 特征规则 (name_overlap 等) | Cross-Encoder (bge-reranker-v2-m3) |
+| 中文覆盖 | 弱（同义词表有限） | 强（BGE-M3 原生支持 100+语言） |
+| 代码行数 | ~150 (tfidf+hybrid+rerank) | ~100 (hybrid+rerank stub) |
+| 模型数量 | 1 (bge-small) | 1 (BGE-M3) + 1 (reranker) |

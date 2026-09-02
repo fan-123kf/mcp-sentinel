@@ -1,29 +1,10 @@
+//! Reciprocal Rank Fusion over heterogeneous retrieval rankings.
+//!
+//! Replaces the previous synonym-expansion + RRF module. The synonym
+//! expansion has been retired -- BGE-M3's learned sparse vector captures
+//! the same cross-language intent signal natively.
+
 use std::collections::HashMap;
-
-pub fn expand_query(query: &str) -> String {
-    let expansions = [
-        ("缺陷", "bug issue defect"),
-        ("故障", "incident outage issue"),
-        ("测试用例", "test case"),
-        ("测试", "test testing"),
-        ("需求", "requirement prd specification"),
-        ("文档", "document documentation"),
-        ("读取", "read file"),
-        ("搜索", "search find query"),
-        ("创建", "create new"),
-        ("更新", "update edit"),
-        ("删除", "delete remove"),
-    ];
-
-    let mut expanded = query.to_string();
-    for (term, aliases) in expansions {
-        if query.contains(term) {
-            expanded.push(' ');
-            expanded.push_str(aliases);
-        }
-    }
-    expanded
-}
 
 pub fn reciprocal_rank_fusion<T: Clone>(rankings: Vec<Vec<(String, T)>>, k: f64) -> Vec<(T, f64)> {
     let mut fused: HashMap<String, (T, f64)> = HashMap::new();
@@ -47,13 +28,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn expands_common_chinese_tool_intents() {
-        let expanded = expand_query("帮我登记一个线上故障");
-        assert!(expanded.contains("incident"));
-        assert!(expanded.contains("issue"));
-    }
-
-    #[test]
     fn rrf_promotes_results_seen_by_both_retrievers() {
         let fused = reciprocal_rank_fusion(
             vec![
@@ -63,5 +37,26 @@ mod tests {
             60.0,
         );
         assert_eq!(fused[0].0, "b");
+    }
+
+    #[test]
+    fn rrf_handles_single_lane() {
+        let fused = reciprocal_rank_fusion(
+            vec![vec![
+                ("a".to_string(), 1),
+                ("b".to_string(), 2),
+                ("c".to_string(), 3),
+            ]],
+            60.0,
+        );
+        assert_eq!(fused.len(), 3);
+        // k=60: scores are 1/61, 1/62, 1/63 -> descending order preserved.
+        assert_eq!(fused[0].0, 1);
+    }
+
+    #[test]
+    fn rrf_empty_rankings() {
+        let fused: Vec<(i32, f64)> = reciprocal_rank_fusion(vec![], 60.0);
+        assert!(fused.is_empty());
     }
 }
