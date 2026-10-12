@@ -6,10 +6,12 @@ use tracing_subscriber::EnvFilter;
 mod backend;
 mod config;
 mod decision_trace;
+mod evaluation;
 mod gateway;
 mod governance;
 mod health;
 mod router;
+mod security;
 mod storage;
 
 use config::Config;
@@ -30,6 +32,17 @@ struct Cli {
 enum Commands {
     /// Start the gateway server
     Start,
+    /// Evaluate retrieval and export tool definitions for token accounting.
+    Eval {
+        #[arg(long)]
+        require_models: bool,
+        #[arg(long, default_value = "docs/eval/data/backend_tools.json")]
+        corpus: PathBuf,
+        #[arg(long, default_value = "eval/retrieval-19.jsonl")]
+        queries: PathBuf,
+        #[arg(long, default_value = "retrieval-eval.json")]
+        output: PathBuf,
+    },
     /// Show current gateway status (config + db summary)
     Status,
     /// Generate health report
@@ -73,6 +86,14 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        Commands::Eval {
+            corpus,
+            queries,
+            output,
+            require_models,
+        } => {
+            evaluation::run(&corpus, &queries, &output, require_models).await?;
+        }
         Commands::Start => {
             info!("Starting mcp-sentinel gateway...");
             start_server(cli.config).await?;
@@ -112,6 +133,7 @@ async fn start_server(config_path: PathBuf) -> anyhow::Result<()> {
     // Initialize health manager with storage
     let health_manager = health::HealthManager::new()
         .with_failure_limit(config.health.consecutive_failure_limit)
+        .with_zombie_threshold(config.health.zombie_threshold_days)
         .with_storage(storage.clone());
 
     // Initialize backend manager
@@ -133,9 +155,15 @@ async fn start_server(config_path: PathBuf) -> anyhow::Result<()> {
         };
         storage.register_tool(registry).await?;
     }
+    health_manager
+        .restore_from_storage(&tools.iter().map(|t| t.tool_id.clone()).collect::<Vec<_>>())
+        .await;
 
     // Initialize router
-    let router = router::SemanticRouter::new(health_manager.clone());
+    let router = router::SemanticRouter::new(health_manager.clone()).with_embedding(
+        config.routing.strategy == "hybrid"
+            || std::env::var("SENTINEL_EMBEDDING").is_ok_and(|v| v == "1"),
+    );
     router.index_tools(tools).await;
 
     // Start daily aggregation task
@@ -190,10 +218,16 @@ async fn generate_report(
     let storage = StorageManager::new(&config.storage.db_path).await?;
     let storage = std::sync::Arc::new(storage);
 
-    let health_manager = health::HealthManager::new().with_storage(storage.clone());
+    let health_manager = health::HealthManager::new()
+        .with_failure_limit(config.health.consecutive_failure_limit)
+        .with_zombie_threshold(config.health.zombie_threshold_days)
+        .with_storage(storage.clone());
 
     // Load health data from storage
     let tools = storage.get_all_registered_tools().await?;
+    health_manager
+        .restore_from_storage(&tools.iter().map(|t| t.tool_id.clone()).collect::<Vec<_>>())
+        .await;
     println!("Generating health report for {} tools...", tools.len());
 
     let report = health::generate_health_report(&health_manager, Some(&storage), days).await?;
@@ -213,7 +247,19 @@ async fn list_tools(config_path: PathBuf, sort_by: &str) -> anyhow::Result<()> {
     let storage = StorageManager::new(&config.storage.db_path).await?;
     let storage = std::sync::Arc::new(storage);
 
-    let health_manager = health::HealthManager::new().with_storage(storage.clone());
+    let health_manager = health::HealthManager::new()
+        .with_failure_limit(config.health.consecutive_failure_limit)
+        .with_zombie_threshold(config.health.zombie_threshold_days)
+        .with_storage(storage.clone());
+    let registered_tools = storage.get_all_registered_tools().await?;
+    health_manager
+        .restore_from_storage(
+            &registered_tools
+                .iter()
+                .map(|t| t.tool_id.clone())
+                .collect::<Vec<_>>(),
+        )
+        .await;
 
     let mut scores = health_manager.get_all_scores().await;
 
@@ -275,7 +321,20 @@ async fn show_status(config_path: PathBuf) -> anyhow::Result<()> {
         }
     };
 
-    let health_manager = health::HealthManager::new().with_storage(storage.clone());
+    let health_manager = health::HealthManager::new()
+        .with_failure_limit(config.health.consecutive_failure_limit)
+        .with_zombie_threshold(config.health.zombie_threshold_days)
+        .with_storage(storage.clone());
+
+    let registered_tools = storage.get_all_registered_tools().await.unwrap_or_default();
+    health_manager
+        .restore_from_storage(
+            &registered_tools
+                .iter()
+                .map(|t| t.tool_id.clone())
+                .collect::<Vec<_>>(),
+        )
+        .await;
 
     let scores = health_manager.get_all_scores().await;
     let total = scores.len();
@@ -325,7 +384,20 @@ async fn gen_config(
     let config = Config::load(&config_path)?;
     let storage = std::sync::Arc::new(StorageManager::new(&config.storage.db_path).await?);
 
-    let health_manager = health::HealthManager::new().with_storage(storage.clone());
+    let health_manager = health::HealthManager::new()
+        .with_failure_limit(config.health.consecutive_failure_limit)
+        .with_zombie_threshold(config.health.zombie_threshold_days)
+        .with_storage(storage.clone());
+
+    let registered_tools = storage.get_all_registered_tools().await.unwrap_or_default();
+    health_manager
+        .restore_from_storage(
+            &registered_tools
+                .iter()
+                .map(|t| t.tool_id.clone())
+                .collect::<Vec<_>>(),
+        )
+        .await;
 
     let suggestions =
         health::generate_cleanup_suggestions(&health_manager, Some(&storage), aggressive).await?;

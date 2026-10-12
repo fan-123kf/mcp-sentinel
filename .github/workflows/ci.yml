@@ -1,0 +1,26 @@
+name: CI
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  verify:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt -- --check
+      - run: cargo clippy --locked --all-targets -- -D clippy::all
+      - run: cargo test --locked
+      - run: cargo run --locked -- eval --output retrieval-eval.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: retrieval-eval-${{ matrix.os }}
+          path: retrieval-eval*.json

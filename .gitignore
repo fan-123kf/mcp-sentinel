@@ -19,3 +19,7 @@ sentinel.toml
 Thumbs.db
 .DS_Store
 .fastembed_cache/
+__pycache__/
+*.py[cod]
+/retrieval-*.json
+.venv/

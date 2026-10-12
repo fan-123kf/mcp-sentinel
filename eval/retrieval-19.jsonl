@@ -1,0 +1,19 @@
+{"query": "create a GitHub issue", "expected_tools": ["github::create_issue"], "category": "exact_keyword"}
+{"query": "list all open pull requests in my repo", "expected_tools": ["github::list_pull_requests"], "category": "exact_keyword"}
+{"query": "search repositories matching keyword", "expected_tools": ["github::search_repositories"], "category": "exact_keyword"}
+{"query": "read the contents of a file", "expected_tools": ["filesystem::read_file"], "category": "exact_keyword"}
+{"query": "write text to a new file", "expected_tools": ["filesystem::write_file"], "category": "exact_keyword"}
+{"query": "list files in a directory", "expected_tools": ["filesystem::list_directory"], "category": "exact_keyword"}
+{"query": "echo back a message", "expected_tools": ["everything::echo"], "category": "exact_keyword"}
+{"query": "show me the server environment variables", "expected_tools": ["everything::get-env"], "category": "exact_keyword"}
+{"query": "帮我登记一个线上故障", "expected_tools": ["github::create_issue"], "category": "chinese_synonym"}
+{"query": "读取本地配置文件", "expected_tools": ["filesystem::read_file"], "category": "chinese_synonym"}
+{"query": "创建一个新的代码分支", "expected_tools": ["github::create_branch"], "category": "chinese_synonym"}
+{"query": "在仓库中查找认证实现", "expected_tools": ["github::search_code"], "category": "chinese_synonym"}
+{"query": "搜索关于部署的文档", "expected_tools": ["filesystem::search_files"], "category": "chinese_synonym"}
+{"query": "看看提交历史", "expected_tools": ["github::list_commits"], "category": "chinese_synonym"}
+{"query": "simulate a slow operation", "expected_tools": ["everything::trigger-long-running-operation"], "category": "natural_language"}
+{"query": "print a long message to stderr", "expected_tools": ["everything::toggle-simulated-logging"], "category": "natural_language"}
+{"query": "compress a file to make it smaller", "expected_tools": ["everything::gzip-file-as-resource"], "category": "natural_language"}
+{"query": "sum two numbers together", "expected_tools": ["everything::get-sum"], "category": "natural_language"}
+{"query": "how do I let teammates see my code changes", "expected_tools": ["github::create_pull_request"], "category": "semantic_gap"}

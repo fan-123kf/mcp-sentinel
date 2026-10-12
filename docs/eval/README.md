@@ -1,3 +1,5 @@
+> 本目录包含历史实验记录。当前基线见 [EVALUATION.md](../EVALUATION.md)；本轮逐查询结果与 token 校验保存在 data/current-retrieval.json 和 data/current-token-account.json。
+
 # 评测报告索引 (Evaluation Reports)
 
 本目录包含对 mcp-sentinel 的四轮实测报告与原始数据。所有结论均来自与真实 LLM agent (glm-5.3-flash) 的端到端实验，方法与原始数据一并列出以便复现。

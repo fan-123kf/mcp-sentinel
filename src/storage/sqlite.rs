@@ -155,7 +155,7 @@ impl StorageManager {
                     SELECT id, tool_id, server_name, tool_name, success, latency_ms, error_type, called_at
                     FROM tool_calls
                     WHERE tool_id = ?1
-                    ORDER BY called_at DESC
+                    ORDER BY called_at DESC, id DESC
                     LIMIT ?2
                     "#,
                 )?;
@@ -171,7 +171,7 @@ impl StorageManager {
                             latency_ms: row.get::<_, i64>(5)? as u64,
                             error_type: row.get(6)?,
                             called_at: DateTime::from_timestamp(row.get(7)?, 0)
-                                .unwrap_or_else(|| Utc::now()),
+                                .unwrap_or_else(Utc::now),
                         })
                     })?
                     .collect::<Result<Vec<_>, _>>()?;
@@ -192,7 +192,7 @@ impl StorageManager {
                     SELECT latency_ms
                     FROM tool_calls
                     WHERE tool_id = ?1 AND success = 1
-                    ORDER BY called_at DESC
+                    ORDER BY called_at DESC, id DESC
                     LIMIT ?2
                     "#,
                 )?;
@@ -210,7 +210,7 @@ impl StorageManager {
                 let mut sorted = latencies.clone();
                 sorted.sort_unstable();
 
-                let p95_index = ((sorted.len() as f64) * 0.95) as usize;
+                let p95_index = ((sorted.len() as f64) * 0.95).ceil() as usize - 1;
                 let p95_index = p95_index.min(sorted.len() - 1);
 
                 Ok(sorted[p95_index] as f64)
@@ -290,9 +290,9 @@ impl StorageManager {
                             description: row.get(3)?,
                             schema_json: row.get(4)?,
                             first_seen: DateTime::from_timestamp(row.get(5)?, 0)
-                                .unwrap_or_else(|| Utc::now()),
+                                .unwrap_or_else(Utc::now),
                             last_seen: DateTime::from_timestamp(row.get(6)?, 0)
-                                .unwrap_or_else(|| Utc::now()),
+                                .unwrap_or_else(Utc::now),
                         })
                     })?
                     .collect::<Result<Vec<_>, _>>()?;
@@ -329,7 +329,7 @@ impl StorageManager {
                     ),
                     p95 AS (
                         SELECT tool_id, latency_ms FROM ranked
-                        WHERE success = 1 AND rn = CAST(cnt * 0.95 AS INTEGER)
+                        WHERE success = 1 AND rn = CAST(cnt * 0.95 + 0.999999 AS INTEGER)
                     )
                     SELECT t.tool_id,
                         date(?1),

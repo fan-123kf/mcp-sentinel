@@ -11,20 +11,27 @@
 //! model files aren't provisioned, we keep RRF order and log a warning so
 //! the gateway still serves traffic.
 
+#[cfg(feature = "models")]
 mod cross_encoder;
+#[cfg(feature = "models")]
 mod embedding;
 mod hybrid;
-pub mod rerank;
+#[cfg(not(feature = "models"))]
+mod model_stubs;
+#[cfg(test)]
+mod rerank;
+#[cfg(test)]
 mod simulation_test;
 mod tfidf;
 pub mod types;
 
 pub use types::RankedTool;
 
-use self::cross_encoder::CrossEncoder;
-use self::embedding::EmbeddingIndex;
 use self::hybrid::reciprocal_rank_fusion;
-use self::rerank::RerankWeights;
+#[cfg(not(feature = "models"))]
+use self::model_stubs::{CrossEncoder, EmbeddingIndex};
+#[cfg(feature = "models")]
+use self::{cross_encoder::CrossEncoder, embedding::EmbeddingIndex};
 use crate::backend::Tool;
 use crate::health::HealthManager;
 use serde_json::Value;
@@ -51,7 +58,6 @@ pub struct SemanticRouter {
     /// provisioned).
     embedding_enabled: bool,
     health_manager: HealthManager,
-    rerank_weights: RerankWeights,
     /// tool_id -> input_schema, stashed at index time for the legacy
     /// feature-rerank path (kept so old behavior survives when neither
     /// embedding nor cross-encoder is available).
@@ -61,27 +67,55 @@ pub struct SemanticRouter {
     /// All known tools, kept for the cross-encoder to rebuild the document
     /// text per candidate.
     tools: Arc<RwLock<Vec<Tool>>>,
+    last_strategy: RwLock<String>,
 }
 
 impl SemanticRouter {
     pub fn new(health_manager: HealthManager) -> Self {
-        let embedding_enabled = std::env::var("SENTINEL_EMBEDDING")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
+        let embedding_enabled = cfg!(feature = "models")
+            && std::env::var("SENTINEL_EMBEDDING")
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false);
         Self {
             embedding: Arc::new(EmbeddingIndex::new()),
             cross_encoder: Arc::new(CrossEncoder::new()),
             fallback_tfidf: Arc::new(TfIdfIndex::new()),
             embedding_enabled,
             health_manager,
-            rerank_weights: RerankWeights::default(),
             schemas: Arc::new(RwLock::new(HashMap::new())),
             last_servers: Arc::new(RwLock::new(Vec::new())),
             tools: Arc::new(RwLock::new(Vec::new())),
+            last_strategy: RwLock::new("not_searched".into()),
         }
     }
 
+    pub fn strategy(&self) -> String {
+        self.last_strategy.read().unwrap().clone()
+    }
+
+    pub fn with_embedding(mut self, enabled: bool) -> Self {
+        self.embedding_enabled = enabled && cfg!(feature = "models");
+        self
+    }
+
+    pub fn require_models(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.embedding_enabled && !self.embedding.is_empty(),
+            "BGE-M3 unavailable; cannot run model evaluation"
+        );
+        self.cross_encoder.verify()?;
+        Ok(())
+    }
+
+    pub fn tool_count(&self) -> usize {
+        self.tools.read().unwrap().len()
+    }
+
     pub async fn index_tools(&self, tools: Vec<Tool>) {
+        let tools: Vec<_> = tools
+            .into_iter()
+            .filter(|t| !crate::security::scan_tool(t).blocked)
+            .collect();
         debug!("Indexing {} tools for hybrid search", tools.len());
 
         // Stash schemas and full tool list before moving on.
@@ -121,14 +155,25 @@ impl SemanticRouter {
         }
     }
 
-    pub async fn search(&self, query: &str, top_k: usize, health_weight: f64) -> Vec<RankedTool> {
+    pub async fn search_with_metadata(
+        &self,
+        query: &str,
+        top_k: usize,
+        health_weight: f64,
+        server: Option<&str>,
+    ) -> (Vec<RankedTool>, String) {
+        let retrieval_k = if server.is_some() {
+            self.tool_count()
+        } else {
+            top_k.saturating_mul(4).max(RERANK_CANDIDATE_POOL)
+        };
         debug!(query = %query, top_k = top_k, "Searching tools");
 
         // --- Stage 1+2: dense + sparse lanes via BGE-M3 -------------------
         let rankings = if self.embedding_enabled && !self.embedding.is_empty() {
             let emb = Arc::clone(&self.embedding);
             let q = query.to_string();
-            let k = top_k * 4;
+            let k = retrieval_k;
             let (dense_res, sparse_res) = tokio::task::spawn_blocking(move || {
                 let dense = emb.search_dense(&q, k);
                 let sparse = emb.search_sparse(&q, k);
@@ -137,29 +182,23 @@ impl SemanticRouter {
             .await
             .unwrap_or_else(|e| {
                 warn!("hybrid lane join error: {}", e);
-                (Err(anyhow::anyhow!("join error")), Err(anyhow::anyhow!("join error")))
+                (
+                    Err(anyhow::anyhow!("join error")),
+                    Err(anyhow::anyhow!("join error")),
+                )
             });
 
             let mut rankings = Vec::new();
             if let Ok(dense) = dense_res {
                 if !dense.is_empty() {
-                    rankings.push(
-                        dense.into_iter()
-                            .map(|(id, t)| (id, t))
-                            .collect::<Vec<_>>(),
-                    );
+                    rankings.push(dense.into_iter().collect::<Vec<_>>());
                 }
             } else if let Err(e) = dense_res {
                 warn!("dense lane error: {}", e);
             }
             if let Ok(sparse) = sparse_res {
                 if !sparse.is_empty() {
-                    rankings.push(
-                        sparse
-                            .into_iter()
-                            .map(|(id, t)| (id, t))
-                            .collect::<Vec<_>>(),
-                    );
+                    rankings.push(sparse.into_iter().collect::<Vec<_>>());
                 }
             } else if let Err(e) = sparse_res {
                 warn!("sparse lane error: {}", e);
@@ -169,13 +208,25 @@ impl SemanticRouter {
             Vec::new()
         };
 
+        let used_embedding = rankings.len();
+        let rankings: Vec<_> = rankings
+            .into_iter()
+            .map(|lane| {
+                lane.into_iter()
+                    .filter(|(_, t)| server.is_none_or(|s| t.server_name.eq_ignore_ascii_case(s)))
+                    .collect()
+            })
+            .collect();
+        let mut used_cross_encoder = false;
+
         // --- Stage 3: RRF fusion (or fall back to TF-IDF if both lanes
         // failed) ----------------------------------------------------------
         let mut candidates: Vec<RankedTool> = if rankings.is_empty() {
             // TF-IDF-only path: single ranking, no fusion needed.
             self.fallback_tfidf
-                .search(query, top_k.max(RERANK_CANDIDATE_POOL))
+                .search(query, retrieval_k)
                 .into_iter()
+                .filter(|t| server.is_none_or(|s| t.server_name.eq_ignore_ascii_case(s)))
                 .map(|mut t| {
                     t.final_score = t.semantic_score;
                     t
@@ -199,6 +250,7 @@ impl SemanticRouter {
             b.final_score
                 .partial_cmp(&a.final_score)
                 .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.tool_id.cmp(&b.tool_id))
         });
         candidates.truncate(top_k.max(RERANK_CANDIDATE_POOL));
 
@@ -208,12 +260,11 @@ impl SemanticRouter {
             let q = query.to_string();
             let pool: Vec<RankedTool> = candidates.clone();
             let tools_snapshot = self.tools.read().unwrap().clone();
-            let result = tokio::task::spawn_blocking(move || {
-                ce.rerank(&q, pool, &tools_snapshot)
-            })
-            .await;
+            let result =
+                tokio::task::spawn_blocking(move || ce.rerank(&q, pool, &tools_snapshot)).await;
             match result {
                 Ok(Ok(reranked)) if !reranked.is_empty() => {
+                    used_cross_encoder = true;
                     debug!("cross-encoder rerank returned {} results", reranked.len());
                     candidates = reranked;
                 }
@@ -224,6 +275,17 @@ impl SemanticRouter {
                 Err(e) => warn!("cross-encoder join error: {}", e),
             }
         }
+
+        let strategy: String = match (used_embedding, used_cross_encoder) {
+            (2, true) => "bge_m3_dense_sparse_rrf_cross_encoder",
+            (2, false) => "bge_m3_dense_sparse_rrf",
+            (0, true) => "tfidf_cross_encoder",
+            (0, false) => "tfidf_fallback",
+            (_, true) => "bge_m3_partial_rrf_cross_encoder",
+            (_, false) => "bge_m3_partial_rrf",
+        }
+        .into();
+        *self.last_strategy.write().unwrap() = strategy.clone();
 
         // --- Stage 5: Health penalty + zombie filter ----------------------
         for candidate in &mut candidates {
@@ -283,11 +345,12 @@ impl SemanticRouter {
             }
         }
 
-        candidates
+        let results = candidates
             .into_iter()
             .filter(|c| c.final_score > 0.0)
             .take(top_k)
-            .collect()
+            .collect();
+        (results, strategy)
     }
 
     /// Fallback-2 support: name-only listing of every indexed tool, grouped

@@ -88,7 +88,7 @@ pub async fn generate_health_report(
             }
         }
 
-        tool_stats.sort_by(|a, b| b.1.cmp(&a.1));
+        tool_stats.sort_by_key(|a| std::cmp::Reverse(a.1));
 
         report.push_str("| Tool | Calls | Success Rate | p95 Latency |\n");
         report.push_str("|------|-------|-------------|-------------|\n");
@@ -100,7 +100,7 @@ pub async fn generate_health_report(
             ));
         }
 
-        report.push_str("\n");
+        report.push('\n');
     }
 
     // Zombie tools section
@@ -134,7 +134,7 @@ pub async fn generate_health_report(
             }
         }
 
-        report.push_str("\n");
+        report.push('\n');
     }
 
     // Degraded tools section
@@ -173,7 +173,7 @@ pub async fn generate_health_report(
             }
         }
 
-        report.push_str("\n");
+        report.push('\n');
     }
 
     // Recommendations section
@@ -235,6 +235,10 @@ pub async fn generate_cleanup_suggestions(
                 .await
             {
                 count == 0
+                    && health_manager
+                        .get_detailed_health(&score.tool_id)
+                        .await
+                        .is_some_and(|h| h.idle_days() >= threshold_days)
             } else {
                 score.zombie
             }
@@ -266,7 +270,7 @@ pub async fn generate_cleanup_suggestions(
             if let Some(server) = tool_id.split("::").next() {
                 zombie_servers
                     .entry(server.to_string())
-                    .or_insert_with(Vec::new)
+                    .or_default()
                     .push(tool_id.to_string());
             }
         }

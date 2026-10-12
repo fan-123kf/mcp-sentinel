@@ -1,247 +1,34 @@
-# mcp-sentinel Development Documentation
+# Architecture and decisions
 
-## Week 1 Implementation Summary
+MCP Sentinel is a single-instance Rust gateway. Axum serves HTTP JSON-RPC; Tokio manages backend I/O; SQLite persists tool registration and invocation history. The default retrieval path is model-free.
 
-### Completed Components
+## Discovery
 
-#### 1. Configuration System (`src/config.rs`)
-- TOML-based configuration with environment variable expansion
-- Support for stdio and HTTP MCP backends
-- Gateway, routing, health, and storage configuration sections
-- Default values for all config options
+Backend tools receive stable `server::tool` identifiers. Metadata is scanned before indexing. The client sees six meta-tools and searches for concrete schemas on demand. The router maintains TF-IDF as a baseline and fallback; optional BGE-M3 dense/sparse rankings are fused by RRF and may be reranked by a Cross-Encoder.
 
-#### 2. Health Manager (`src/health/`)
-- In-memory health tracking for all tools
-- `ToolHealth` struct tracking:
-  - Success/failure counts
-  - Latency metrics (p50, p95)
-  - Consecutive failures
-  - Last call timestamps
-  - 7-day call counts
-  - Zombie score calculation
-- Health score computation formula implemented
+Server filtering precedes truncation and reranking. Model inference runs in `spawn_blocking`. Search returns its actual pipeline with the results so traces and evaluations can distinguish model retrieval from fallback.
 
-#### 3. Backend Manager (`src/backend/`)
-- **Stdio Backend**: Spawns MCP servers as subprocesses, communicates via JSON-RPC over stdin/stdout
-- **HTTP Backend**: Connects to HTTP MCP servers with optional bearer auth
-- Unified interface for listing tools and invoking tool calls
-- Automatic health recording after each invocation
+## Invocation
 
-#### 4. Semantic Router (`src/router/`)
-- TF-IDF index for semantic tool search
-- Tokenization and term frequency computation
-- Cosine similarity scoring
-- Health-weighted ranking:
-  - `final_score = semantic_score × (1 - health_weight + health_weight × health_penalty)`
-  - Degraded tools get 0.1x penalty
-  - Zombie tools filtered out completely
+The gateway checks metadata and derives a policy from trusted backend annotations or conservative name heuristics. Unknown names require confirmation. Only reads may retry transient failures. A write cannot become retry-safe merely because a client asks for fallback.
 
-#### 5. Gateway Server (`src/gateway/`)
-- Axum HTTP server with JSON-RPC endpoint at `/mcp`
-- Four meta-tools exposed to AI clients:
-  1. `gateway_search_tools` - Semantic search with health ranking
-  2. `gateway_invoke` - Tool invocation with health tracking
-  3. `gateway_health_report` - Health status summary
-  4. `gateway_suggest_cleanup` - Zombie detection and cleanup recommendations
-- Health check endpoint at `/health`
+Backend responses are scanned in full, including error content and structured output, before delivery. `isError` records a failed call. Scanning cannot roll back server-side effects; annotations and client confirmation are not authentication.
 
-#### 6. CLI (`src/main.rs`)
-- Clap-based command-line interface
-- Commands: `start`, `status`, `report`, `tools`, `gen-config`
-- Tracing/logging integration
+## State and lifetime
 
-### Project Structure
+Health state is updated from invocation outcomes and persisted as call records. Registration and history restoration keep new tools discoverable and recover consecutive failures across restarts. Background tasks aggregate daily statistics and clean old records.
 
-```
-mcp-sentinel/
-├── Cargo.toml              # Dependencies and project metadata
-├── sentinel.toml.example   # Example configuration
-├── README.md               # User-facing documentation
-├── LICENSE                 # MIT license
-├── .gitignore             # Git ignore patterns
-└── src/
-    ├── main.rs            # CLI entry point
-    ├── config.rs          # Configuration loading
-    ├── backend/
-    │   ├── mod.rs         # BackendManager coordination
-    │   ├── types.rs       # Tool, ToolCall, ToolCallResult types
-    │   ├── stdio.rs       # Stdio MCP client implementation
-    │   └── http.rs        # HTTP MCP client implementation
-    ├── health/
-    │   ├── mod.rs         # Module exports
-    │   ├── types.rs       # ToolHealth, HealthScore structs
-    │   └── tracker.rs     # HealthManager implementation
-    ├── router/
-    │   ├── mod.rs         # SemanticRouter
-    │   ├── types.rs       # RankedTool, RoutingDecision
-    │   └── tfidf.rs       # TF-IDF index implementation
-    └── gateway/
-        ├── mod.rs         # Axum server setup
-        └── meta_tools.rs  # Meta-tool handlers
+The trace store is bounded to 200 entries. It stores decision metadata without invocation arguments or output bodies; search queries may still contain sensitive information. Traces do not survive restart.
 
-```
+Stdio responses are matched to request IDs through oneshot channels. Failed writes and timeouts remove pending entries; stdout EOF closes all remaining waiters. Child processes terminate on backend drop. Stderr is inherited to avoid filling an unread pipe. Ctrl+C triggers graceful HTTP shutdown.
 
-### How It Works
+## Deliberate limits
 
-1. **Startup**: Gateway loads config, spawns all backend MCP servers (stdio) or connects to HTTP servers
-2. **Indexing**: All tools from all backends are indexed with TF-IDF
-3. **Client connects**: AI client (Claude Code, Cursor) sees only 4 meta-tools
-4. **Search flow**:
-   - Client calls `gateway_search_tools` with natural language query
-   - TF-IDF finds semantically relevant tools
-   - HealthManager enriches results with health scores
-   - Final scores computed with health penalty
-   - Top K results returned
-5. **Invoke flow**:
-   - Client calls `gateway_invoke` with tool_id
-   - Gateway routes to appropriate backend
-   - Latency measured, outcome recorded
-   - HealthManager updates tool health
+- Single-instance SQLite, no distributed coordination.
+- HTTP JSON responses; complete Streamable HTTP sessions and SSE remain future work.
+- Loopback binding without inbound authentication; use trusted local clients and servers.
+- Rule-based injection detection with false positives and false negatives.
+- Model code exists, but full inference and retrieval quality require a provisioned environment.
+- `web_ui` is reserved and does not enable a UI.
 
-### Testing the Implementation
-
-Since Rust/Cargo is not installed on this system, the implementation is ready but not compiled. To test:
-
-```bash
-# Install Rust
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-
-# Build
-cd mcp-sentinel
-cargo build --release
-
-# Create config
-cp sentinel.toml.example sentinel.toml
-# Edit sentinel.toml with your MCP server configurations
-
-# Run
-cargo run --release -- start
-```
-
-### Next Steps (Week 2)
-
-1. **SQLite Storage Layer**:
-   - Implement `src/storage/sqlite.rs`
-   - Create tables: `tool_calls`, `tool_registry`, `daily_stats`
-   - Persist health metrics to disk
-   - Implement retention policy (30 days)
-
-2. **Enhanced Health Tracking**:
-   - P95 latency calculation with sliding window
-   - 7-day rolling call count
-   - Time-series aggregation
-
-3. **Report Generation**:
-   - Implement `mcp-sentinel report` command
-   - Generate Markdown health reports
-   - Include zombie detection, degraded tools, recommendations
-
-4. **Zombie Detection**:
-   - Implement proper zombie scoring based on 7-day window
-   - `gateway_suggest_cleanup` full implementation
-   - Token savings estimation
-
-### Known Limitations (Week 1)
-
-- Health metrics are in-memory only (lost on restart)
-- P95 latency not accurately calculated (needs sliding window)
-- 7-day call count not properly implemented
-- No historical data for trending
-- Daemon mode not implemented
-- Web UI not started (Week 4)
-
-### Dependencies Used
-
-- **axum**: Web framework for HTTP/JSON-RPC server
-- **tokio**: Async runtime
-- **serde/serde_json**: Serialization
-- **toml**: Config file parsing
-- **tracing**: Structured logging
-- **async-process**: Stdio subprocess management
-- **reqwest**: HTTP client for HTTP backends
-- **clap**: CLI parsing
-- **unicode-segmentation**: Text tokenization for TF-IDF
-
-### Configuration Example
-
-```toml
-[gateway]
-port = 3000
-web_ui = true
-log_level = "info"
-
-[routing]
-strategy = "tfidf"
-top_k = 5
-health_weight = 0.4  # 40% weight to health in final score
-
-[health]
-zombie_threshold_days = 7
-consecutive_failure_limit = 5
-degraded_score_penalty = 0.1
-
-[backends.github]
-transport = "stdio"
-command = "npx"
-args = ["-y", "@modelcontextprotocol/server-github"]
-env = { GITHUB_TOKEN = "${GITHUB_TOKEN}" }
-```
-
-### API Examples
-
-#### Search Tools
-```bash
-curl -X POST http://localhost:3000/mcp \
-  -H "Content-Type: application/json" \
-  -d '{
-    "jsonrpc": "2.0",
-    "id": 1,
-    "method": "tools/call",
-    "params": {
-      "name": "gateway_search_tools",
-      "arguments": {
-        "query": "create a GitHub issue",
-        "top_k": 3
-      }
-    }
-  }'
-```
-
-#### Invoke Tool
-```bash
-curl -X POST http://localhost:3000/mcp \
-  -H "Content-Type: application/json" \
-  -d '{
-    "jsonrpc": "2.0",
-    "id": 2,
-    "method": "tools/call",
-    "params": {
-      "name": "gateway_invoke",
-      "arguments": {
-        "tool_id": "github::create_issue",
-        "arguments": {
-          "title": "Bug report",
-          "body": "Description"
-        }
-      }
-    }
-  }'
-```
-
-### Performance Characteristics
-
-- **Startup time**: ~50-200ms (depends on number of backends)
-- **Search latency**: ~5-15ms (TF-IDF + health lookup)
-- **Memory overhead**: ~10-20MB baseline + ~1KB per tool
-- **Token savings**: Estimated 85-95% reduction vs static tool list
-
-### Differences from Design Doc
-
-Minor implementation differences from the original design:
-1. `get_routing_decision` not used in Week 1 (reserved for observability features)
-2. Fallback mechanism deferred to Week 3
-3. Some health score fields (latency_p95) computed but not yet accurate
-
----
-
-**Week 1 Status**: ✅ Complete (pending compilation test on system with Rust installed)
+The next useful improvements are protocol conformance tests, inbound authentication, a larger labeled corpus, and reproducible model latency/quality measurements.

@@ -18,16 +18,6 @@ pub struct ToolCallRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DailyStat {
-    pub tool_id: String,
-    pub date: String,
-    pub call_count: i64,
-    pub success_count: i64,
-    pub avg_latency: f64,
-    pub p95_latency: f64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolRegistry {
     pub tool_id: String,
     pub server_name: String,

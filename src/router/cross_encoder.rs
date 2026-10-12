@@ -74,55 +74,20 @@ impl CrossEncoder {
                     .with_context(|| format!("missing reranker file {} in {}", name, dir.display()))
             };
 
-            // BGE reranker ONNX uses external data files (model.onnx + model.onnx_data).
-            // ORT resolves relative paths from the current working directory at load time,
-            // so we must change to the model dir before loading.
-            let onnx = read("onnx/model.onnx")?;
-            let tokenizer = read("tokenizer.json")?;
-            let config = read("config.json")?;
-            let special_tokens = read("special_tokens_map.json")?;
-            let tokenizer_config = read("tokenizer_config.json")?;
-
-            // BGE reranker ONNX uses external data files (model.onnx + model.onnx_data).
-            // ONNX external data uses relative paths resolved from CWD at load time,
-            // so we must change to the model dir before loading AND copy the
-            // external data file there.
-            let onnx = read("onnx/model.onnx")?;
-            let tokenizer = read("tokenizer.json")?;
-            let config = read("config.json")?;
-            let special_tokens = read("special_tokens_map.json")?;
-            let tokenizer_config = read("tokenizer_config.json")?;
-
-            // Copy model.onnx_data to the model dir so ORT resolves it correctly.
-            let onnx_data_src = dir.join("onnx/model.onnx_data");
-            let onnx_data_dst = dir.join("model.onnx_data");
-            if !onnx_data_dst.exists() {
-                std::fs::copy(&onnx_data_src, &onnx_data_dst)
-                    .with_context(|| "copy model.onnx_data to model dir")?;
-            }
-
-            // Save original CWD and change to model dir for ORT loading.
-            let original_cwd = std::env::current_dir()
-                .with_context(|| "get original cwd")?;
-            std::env::set_current_dir(&dir)
-                .with_context(|| format!("setcwd to {}", dir.display()))?;
-
             let user_model = fastembed::UserDefinedRerankingModel::new(
-                onnx,
+                std::fs::canonicalize(dir.join("onnx/model.onnx"))?,
                 fastembed::TokenizerFiles {
-                    tokenizer_file: tokenizer,
-                    config_file: config,
-                    special_tokens_map_file: special_tokens,
-                    tokenizer_config_file: tokenizer_config,
+                    tokenizer_file: read("tokenizer.json")?,
+                    config_file: read("config.json")?,
+                    special_tokens_map_file: read("special_tokens_map.json")?,
+                    tokenizer_config_file: read("tokenizer_config.json")?,
                 },
             );
-            let opts = fastembed::RerankInitOptionsUserDefined::default();
-            let result = TextRerank::try_new_from_user_defined(user_model, opts)
-                .map_err(|e| anyhow::anyhow!("reranker ONNX session init failed: {}", e));
-
-            // Always restore CWD.
-            let _ = std::env::set_current_dir(&original_cwd);
-            result
+            TextRerank::try_new_from_user_defined(
+                user_model,
+                fastembed::RerankInitOptionsUserDefined::default(),
+            )
+            .map_err(|e| anyhow::anyhow!("reranker ONNX session init failed: {}", e))
         };
 
         match model {
@@ -183,8 +148,7 @@ impl CrossEncoder {
         // Map fastembed's sorted (index, score) results back into our
         // candidates. fastembed sorts by score desc; we mirror that order
         // and overwrite final_score with the cross-encoder score.
-        let mut rescored: Vec<(usize, f32)> =
-            results.iter().map(|r| (r.index, r.score)).collect();
+        let mut rescored: Vec<(usize, f32)> = results.iter().map(|r| (r.index, r.score)).collect();
         // Re-sort defensively (fastembed already returns sorted, but be safe).
         rescored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
@@ -202,6 +166,10 @@ impl CrossEncoder {
             out.push(cand);
         }
         Ok(out)
+    }
+
+    pub fn verify(&self) -> anyhow::Result<()> {
+        self.model().map(|_| ())
     }
 
     pub fn is_available(&self) -> bool {
@@ -229,7 +197,10 @@ mod tests {
             .map(|d| PathBuf::from(d).join("reranker"))
             .unwrap_or_else(|_| PathBuf::from(DEFAULT_RERANK_DIR));
         if !dir.join("onnx/model.onnx").exists() {
-            eprintln!("skip: reranker model files not provisioned at {}", dir.display());
+            eprintln!(
+                "skip: reranker model files not provisioned at {}",
+                dir.display()
+            );
             return;
         }
 
@@ -248,6 +219,7 @@ mod tests {
             tool_name: "create_issue".to_string(),
             server_name: "github".to_string(),
             description: "Create a new issue in a GitHub repository".to_string(),
+            input_schema: serde_json::json!({}),
             semantic_score: 0.3,
             health_score: 1.0,
             final_score: 0.3,
@@ -255,7 +227,9 @@ mod tests {
         }];
 
         let ce = CrossEncoder::new();
-        let out = ce.rerank("create a GitHub issue", candidates, &tools).expect("rerank");
+        let out = ce
+            .rerank("create a GitHub issue", candidates, &tools)
+            .expect("rerank");
         assert!(!out.is_empty());
         assert!(out[0].final_score > 0.5, "exact-match should score high");
     }

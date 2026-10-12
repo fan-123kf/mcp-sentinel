@@ -25,6 +25,19 @@ impl HttpBackend {
         })
     }
 
+    pub async fn initialize(&self) -> Result<()> {
+        self.send_request(
+            "initialize",
+            Some(json!({
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": { "name": "mcp-sentinel", "version": env!("CARGO_PKG_VERSION") }
+            })),
+        )
+        .await?;
+        Ok(())
+    }
+
     async fn send_request(&self, method: &str, params: Option<Value>) -> Result<Value> {
         let request = json!({
             "jsonrpc": "2.0",
@@ -41,7 +54,12 @@ impl HttpBackend {
             }
         }
 
-        let response = req.send().await.context("HTTP request failed")?;
+        let response = req
+            .send()
+            .await
+            .context("HTTP request failed")?
+            .error_for_status()
+            .context("HTTP backend returned an error status")?;
 
         let json_response: Value = response.json().await.context("Failed to parse response")?;
 
@@ -76,6 +94,6 @@ impl HttpBackend {
 
         let response = self.send_request("tools/call", Some(params)).await?;
 
-        Ok(response.get("content").cloned().unwrap_or(Value::Null))
+        Ok(response)
     }
 }

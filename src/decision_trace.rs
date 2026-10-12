@@ -95,5 +95,26 @@ impl DecisionTraceStore {
 }
 
 fn new_trace_id() -> String {
-    format!("trc-{}", Utc::now().format("%Y%m%d%H%M%S%6f"))
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    format!(
+        "trc-{}-{}",
+        Utc::now().format("%Y%m%d%H%M%S%6f"),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn bounded_traces_have_unique_ids_and_evict_oldest() {
+        let store = DecisionTraceStore::default();
+        let first = store.record_search("first", &[], "test").await;
+        let mut ids = std::collections::HashSet::new();
+        for _ in 0..MAX_TRACES + 1 {
+            assert!(ids.insert(store.record_search("query", &[], "test").await));
+        }
+        assert!(store.get(&first).await.is_none());
+        assert_eq!(store.traces.read().await.len(), MAX_TRACES);
+    }
 }

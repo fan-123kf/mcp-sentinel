@@ -10,7 +10,8 @@ use tokio::sync::{Mutex, RwLock};
 use tracing::debug;
 
 pub struct StdioBackend {
-    process: Arc<Mutex<Child>>,
+    // Keep the child alive; kill_on_drop terminates it with the backend.
+    _process: Arc<Mutex<Child>>,
     stdin_writer: Arc<Mutex<ChildStdin>>,
     response_channels: Arc<RwLock<HashMap<u64, tokio::sync::oneshot::Sender<Value>>>>,
     next_id: Arc<Mutex<u64>>,
@@ -26,7 +27,8 @@ impl StdioBackend {
         cmd.args(args)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
+            // Inherit stderr so a verbose backend cannot fill an unread pipe.
+            .stderr(std::process::Stdio::inherit())
             .kill_on_drop(true);
 
         if let Some(env_vars) = env {
@@ -70,10 +72,12 @@ impl StdioBackend {
                     }
                 }
             }
+            // EOF means no pending request can receive a response.
+            response_channels_clone.write().await.clear();
         });
 
         Ok(Self {
-            process: Arc::new(Mutex::new(child)),
+            _process: Arc::new(Mutex::new(child)),
             stdin_writer: Arc::new(Mutex::new(stdin)),
             response_channels,
             next_id: Arc::new(Mutex::new(1)),
@@ -119,6 +123,16 @@ impl StdioBackend {
     }
 
     async fn send_request(&self, method: &str, params: Option<Value>) -> Result<Value> {
+        self.send_request_with_timeout(method, params, std::time::Duration::from_secs(30))
+            .await
+    }
+
+    async fn send_request_with_timeout(
+        &self,
+        method: &str,
+        params: Option<Value>,
+        timeout: std::time::Duration,
+    ) -> Result<Value> {
         let mut id_counter = self.next_id.lock().await;
         let id = *id_counter;
         *id_counter += 1;
@@ -138,7 +152,7 @@ impl StdioBackend {
         }
 
         let request_str = serde_json::to_string(&request)?;
-        {
+        let write_result: Result<()> = async {
             let mut stdin = self.stdin_writer.lock().await;
             stdin
                 .write_all(request_str.as_bytes())
@@ -149,11 +163,18 @@ impl StdioBackend {
                 .await
                 .context("Failed to write newline")?;
             stdin.flush().await.context("Failed to flush stdin")?;
+            Ok(())
+        }
+        .await;
+        if let Err(error) = write_result {
+            self.response_channels.write().await.remove(&id);
+            return Err(error);
         }
 
         // Wait for response with timeout
-        let response = tokio::time::timeout(std::time::Duration::from_secs(30), rx)
-            .await
+        let response = tokio::time::timeout(timeout, rx).await;
+        self.response_channels.write().await.remove(&id);
+        let response = response
             .context("Request timeout")?
             .context("Channel closed")?;
 
@@ -188,6 +209,34 @@ impl StdioBackend {
 
         let response = self.send_request("tools/call", Some(params)).await?;
 
-        Ok(response.get("content").cloned().unwrap_or(Value::Null))
+        Ok(response)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn removes_pending_requests_after_timeout() {
+        // A child that consumes stdin but never responds exercises timeout cleanup.
+        #[cfg(windows)]
+        let (command, args) = (
+            "powershell",
+            vec![
+                "-NoProfile",
+                "-Command",
+                "$null = [Console]::In.ReadToEnd()",
+            ],
+        );
+        #[cfg(not(windows))]
+        let (command, args) = ("sh", vec!["-c", "cat >/dev/null"]);
+        let args: Vec<String> = args.into_iter().map(str::to_string).collect();
+        let backend = StdioBackend::new(command, &args, None).await.unwrap();
+        let result = backend
+            .send_request_with_timeout("tools/list", None, std::time::Duration::from_millis(50))
+            .await;
+        assert!(result.is_err());
+        assert!(backend.response_channels.read().await.is_empty());
     }
 }

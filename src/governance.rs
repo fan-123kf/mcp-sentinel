@@ -34,7 +34,7 @@ impl ToolPolicy {
     /// Authoritative classification from MCP tool annotations
     /// (readOnlyHint / destructiveHint / idempotentHint). Servers that provide
     /// annotations know their own side effects better than any name heuristic.
-    pub fn from_annotations(annotations: &Value, tool_id: &str) -> Option<Self> {
+    pub fn from_annotations(annotations: &Value, _tool_id: &str) -> Option<Self> {
         let obj = annotations.as_object()?;
         let read_only = obj.get("readOnlyHint").and_then(Value::as_bool);
         let destructive = obj.get("destructiveHint").and_then(Value::as_bool);
@@ -93,6 +93,23 @@ impl ToolPolicy {
         }
 
         if writes.iter().any(|verb| name.contains(verb)) {
+            return Self {
+                side_effect: SideEffect::Write,
+                confirmation_required: true,
+                retry_safe: false,
+                max_attempts: 1,
+            };
+        }
+
+        let read_prefixes = [
+            "read", "get", "list", "search", "find", "fetch", "query", "inspect", "check", "echo",
+            "count", "describe",
+        ];
+        if !read_prefixes.iter().any(|prefix| {
+            name == *prefix
+                || name.starts_with(&format!("{prefix}_"))
+                || name.starts_with(&format!("{prefix}-"))
+        }) {
             return Self {
                 side_effect: SideEffect::Write,
                 confirmation_required: true,

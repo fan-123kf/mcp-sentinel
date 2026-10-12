@@ -15,7 +15,7 @@ struct Document {
     tool_name: String,
     server_name: String,
     description: String,
-    terms: Vec<String>,
+    input_schema: Value,
     tf: HashMap<String, f64>,
 }
 
@@ -76,7 +76,7 @@ impl TfIdfIndex {
             let terms = Self::tokenize(&text);
             let tf = Self::compute_tf(&terms);
 
-            for term in terms.iter() {
+            for term in terms.iter().collect::<std::collections::HashSet<_>>() {
                 *term_doc_count.entry(term.clone()).or_insert(0) += 1;
             }
 
@@ -85,7 +85,7 @@ impl TfIdfIndex {
                 tool_name: tool.name.clone(),
                 server_name: tool.server_name.unwrap_or_default(),
                 description: tool.description.clone(),
-                terms,
+                input_schema: tool.input_schema.clone(),
                 tf,
             });
         }
@@ -94,7 +94,7 @@ impl TfIdfIndex {
         let idf: HashMap<String, f64> = term_doc_count
             .into_iter()
             .map(|(term, count)| {
-                let idf_score = (total_docs / count as f64).ln();
+                let idf_score = ((total_docs + 1.0) / (count as f64 + 1.0)).ln() + 1.0;
                 (term, idf_score)
             })
             .collect();
@@ -131,6 +131,7 @@ impl TfIdfIndex {
                     tool_name: doc_item.tool_name.clone(),
                     server_name: doc_item.server_name.clone(),
                     description: doc_item.description.clone(),
+                    input_schema: doc_item.input_schema.clone(),
                     semantic_score: score,
                     health_score: 1.0,
                     final_score: score,

@@ -21,7 +21,6 @@
 
 use crate::backend::Tool;
 use crate::router::types::RankedTool;
-use anyhow::{Context};
 use fastembed::{Bgem3Embedding, Bgem3InitOptions, Bgem3Model, SparseEmbedding};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
@@ -85,7 +84,7 @@ pub struct EmbeddingIndex {
     docs: RwLock<Vec<Doc>>,
     model: RwLock<Option<Arc<Mutex<Bgem3Embedding>>>>,
     error: RwLock<Option<String>>,
-    sparse_top_k: usize,
+    query_cache: Mutex<Option<(String, fastembed::Bgem3EmbeddingOutput)>>,
 }
 
 impl EmbeddingIndex {
@@ -94,7 +93,7 @@ impl EmbeddingIndex {
             docs: RwLock::new(Vec::new()),
             model: RwLock::new(None),
             error: RwLock::new(None),
-            sparse_top_k: 256,
+            query_cache: Mutex::new(None),
         }
     }
 
@@ -131,23 +130,18 @@ impl EmbeddingIndex {
             Bgem3Embedding::try_new(Bgem3InitOptions::new(Bgem3Model::BGEM3Q))
                 .map_err(|e| anyhow::anyhow!("bge-m3 download/init failed: {}", e))
         } else {
-            // Local-files path: load ONNX + tokenizer from FASTEMBED_MODEL_DIR.
-            // fastembed 5.x does not yet expose try_new_from_user_defined for
-            // BGE-M3, so this path requires a future fastembed release. Until
-            // then the local-files branch only verifies the model dir exists
-            // and points the user at the download path.
             let dir = Self::model_dir();
-            if !dir.join("onnx/model.onnx").exists() {
-                anyhow::bail!(
-                    "bge-m3 model files not found at {} (set SENTINEL_DOWNLOAD_MODELS=1 \
-                     to fetch via hf-hub, or provision model files per docs/retrieval-upgrade-2026-09-01.md)",
-                    dir.display()
-                );
-            }
-            Bgem3Embedding::try_new(Bgem3InitOptions::new(Bgem3Model::BGEM3Q))
-                .map_err(|e| anyhow::anyhow!(
-                    "local bge-m3 init failed (set SENTINEL_DOWNLOAD_MODELS=1 for hf-hub): {}", e
-                ))
+            let read = |name: &str| std::fs::read(dir.join(name));
+            Bgem3Embedding::try_new_from_path(
+                std::fs::canonicalize(dir.join("onnx"))?,
+                fastembed::TokenizerFiles {
+                    tokenizer_file: read("tokenizer.json")?,
+                    config_file: read("config.json")?,
+                    special_tokens_map_file: read("special_tokens_map.json")?,
+                    tokenizer_config_file: read("tokenizer_config.json")?,
+                },
+                fastembed::InitOptionsUserDefined::default(),
+            )
         };
 
         match model {
@@ -217,18 +211,31 @@ impl EmbeddingIndex {
         result
     }
 
+    fn encode_query(&self, query: &str) -> anyhow::Result<fastembed::Bgem3EmbeddingOutput> {
+        let mut cache = self.query_cache.lock().unwrap();
+        if let Some((cached, output)) = cache.as_ref() {
+            if cached == query {
+                return Ok(output.clone());
+            }
+        }
+        let model = self.model()?;
+        let output = model.lock().unwrap().embed(vec![query.to_string()], None)?;
+        *cache = Some((query.to_string(), output.clone()));
+        Ok(output)
+    }
+
     /// Dense semantic search: returns (tool_id, RankedTool) sorted by cosine
     /// score desc, up to top_k.
-    pub fn search_dense(&self, query: &str, top_k: usize) -> anyhow::Result<Vec<(String, RankedTool)>> {
+    pub fn search_dense(
+        &self,
+        query: &str,
+        top_k: usize,
+    ) -> anyhow::Result<Vec<(String, RankedTool)>> {
         let docs = self.docs.read().unwrap();
         if docs.is_empty() {
             return Ok(Vec::new());
         }
-        let model = self.model()?;
-        let mut output = {
-            let mut m = model.lock().unwrap();
-            m.embed(vec![query.to_string()], None)?
-        };
+        let mut output = self.encode_query(query)?;
         let mut qv = output.dense.pop().unwrap_or_default();
         Self::l2_normalize(&mut qv);
 
@@ -241,6 +248,7 @@ impl EmbeddingIndex {
                     tool_name: doc.tool.name.clone(),
                     server_name: doc.tool.server_name.clone().unwrap_or_default(),
                     description: doc.tool.description.clone(),
+                    input_schema: doc.tool.input_schema.clone(),
                     semantic_score: dot as f64,
                     health_score: 1.0,
                     final_score: dot as f64,
@@ -271,15 +279,11 @@ impl EmbeddingIndex {
         if docs.is_empty() {
             return Ok(Vec::new());
         }
-        let model = self.model()?;
-        let mut output = {
-            let mut m = model.lock().unwrap();
-            m.embed(vec![query.to_string()], None)?
-        };
-        let q_sparse: SparseEmbedding = output
-            .sparse
-            .pop()
-            .unwrap_or_else(|| SparseEmbedding { indices: Vec::new(), values: Vec::new() });
+        let mut output = self.encode_query(query)?;
+        let q_sparse: SparseEmbedding = output.sparse.pop().unwrap_or_else(|| SparseEmbedding {
+            indices: Vec::new(),
+            values: Vec::new(),
+        });
 
         // Build a sparse-weight map for the query so we can score each doc
         // by intersecting their non-zero indices and summing query * doc.
@@ -292,6 +296,7 @@ impl EmbeddingIndex {
                     tool_name: doc.tool.name.clone(),
                     server_name: doc.tool.server_name.clone().unwrap_or_default(),
                     description: doc.tool.description.clone(),
+                    input_schema: doc.tool.input_schema.clone(),
                     semantic_score: score as f64,
                     health_score: 1.0,
                     final_score: score as f64,

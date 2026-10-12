@@ -1,0 +1,339 @@
+{
+  "mrr_at_20": 0.4912280701754385,
+  "pipeline": "tfidf_fallback",
+  "query_count": 19,
+  "recall_at_5": 0.631578947368421,
+  "relevant_queries": 19,
+  "rows": [
+    {
+      "expected": [
+        "github::create_issue"
+      ],
+      "pipeline": "tfidf_fallback",
+      "query": "create a GitHub issue",
+      "returned": [
+        "github::create_issue",
+        "github::update_issue",
+        "github::get_issue",
+        "github::add_issue_comment",
+        "github::create_or_update_file",
+        "github::create_branch",
+        "filesystem::create_directory",
+        "github::search_users",
+        "github::create_repository",
+        "github::list_commits",
+        "github::search_code",
+        "github::create_pull_request",
+        "github::list_issues",
+        "github::search_issues",
+        "github::search_repositories",
+        "filesystem::write_file",
+        "github::create_pull_request_review",
+        "github::get_file_contents",
+        "github::fork_repository",
+        "github::push_files"
+      ]
+    },
+    {
+      "expected": [
+        "github::list_pull_requests"
+      ],
+      "pipeline": "tfidf_fallback",
+      "query": "list all open pull requests in my repo",
+      "returned": [
+        "github::search_issues",
+        "github::get_pull_request_files",
+        "github::get_pull_request_status",
+        "github::list_pull_requests",
+        "github::get_pull_request_reviews",
+        "github::list_commits",
+        "github::get_pull_request",
+        "github::get_pull_request_comments",
+        "github::update_pull_request_branch",
+        "github::list_issues",
+        "github::create_pull_request",
+        "github::merge_pull_request",
+        "filesystem::list_directory",
+        "filesystem::list_allowed_directories",
+        "filesystem::list_directory_with_sizes",
+        "everything::get-env",
+        "github::create_pull_request_review",
+        "filesystem::search_files",
+        "github::create_issue",
+        "github::update_issue"
+      ]
+    },
+    {
+      "expected": [
+        "github::search_repositories"
+      ],
+      "pipeline": "tfidf_fallback",
+      "query": "search repositories matching keyword",
+      "returned": [
+        "github::search_code",
+        "github::search_issues",
+        "github::search_repositories",
+        "filesystem::search_files",
+        "github::search_users"
+      ]
+    },
+    {
+      "expected": [
+        "filesystem::read_file"
+      ],
+      "pipeline": "tfidf_fallback",
+      "query": "read the contents of a file",
+      "returned": [
+        "filesystem::read_text_file",
+        "filesystem::read_file",
+        "github::get_file_contents",
+        "filesystem::read_multiple_files",
+        "filesystem::read_media_file",
+        "everything::gzip-file-as-resource",
+        "github::create_or_update_file",
+        "filesystem::get_file_info",
+        "filesystem::write_file",
+        "github::create_pull_request",
+        "github::update_pull_request_branch",
+        "filesystem::edit_file",
+        "github::create_pull_request_review",
+        "filesystem::move_file",
+        "github::list_pull_requests",
+        "filesystem::directory_tree",
+        "filesystem::list_directory",
+        "github::create_branch",
+        "filesystem::list_directory_with_sizes",
+        "github::get_pull_request_reviews"
+      ]
+    },
+    {
+      "expected": [
+        "filesystem::write_file"
+      ],
+      "pipeline": "tfidf_fallback",
+      "query": "write text to a new file",
+      "returned": [
+        "filesystem::write_file",
+        "filesystem::read_text_file",
+        "filesystem::read_file",
+        "filesystem::edit_file",
+        "github::create_issue",
+        "github::create_or_update_file",
+        "everything::gzip-file-as-resource",
+        "github::create_branch",
+        "filesystem::get_file_info",
+        "filesystem::read_media_file",
+        "github::get_file_contents",
+        "everything::get-resource-reference",
+        "github::create_repository",
+        "filesystem::create_directory",
+        "filesystem::read_multiple_files",
+        "github::create_pull_request_review",
+        "github::create_pull_request",
+        "filesystem::list_directory",
+        "filesystem::list_directory_with_sizes",
+        "filesystem::directory_tree"
+      ]
+    },
+    {
+      "expected": [
+        "filesystem::list_directory"
+      ],
+      "pipeline": "tfidf_fallback",
+      "query": "list files in a directory",
+      "returned": [
+        "filesystem::list_directory",
+        "filesystem::list_directory_with_sizes",
+        "filesystem::create_directory",
+        "filesystem::search_files",
+        "github::get_pull_request_files",
+        "github::list_commits",
+        "filesystem::list_allowed_directories",
+        "github::push_files",
+        "filesystem::directory_tree",
+        "filesystem::read_multiple_files",
+        "github::list_issues",
+        "github::get_file_contents",
+        "filesystem::move_file",
+        "filesystem::get_file_info",
+        "filesystem::write_file",
+        "filesystem::read_media_file",
+        "github::list_pull_requests",
+        "github::create_or_update_file"
+      ]
+    },
+    {
+      "expected": [
+        "everything::echo"
+      ],
+      "pipeline": "tfidf_fallback",
+      "query": "echo back a message",
+      "returned": [
+        "everything::echo",
+        "everything::get-annotated-message",
+        "github::push_files",
+        "github::create_or_update_file",
+        "github::merge_pull_request"
+      ]
+    },
+    {
+      "expected": [
+        "everything::get-env"
+      ],
+      "pipeline": "tfidf_fallback",
+      "query": "show me the server environment variables",
+      "returned": [
+        "everything::get-env",
+        "filesystem::list_allowed_directories",
+        "filesystem::read_text_file",
+        "filesystem::read_file",
+        "github::create_pull_request",
+        "github::update_pull_request_branch",
+        "github::create_pull_request_review",
+        "everything::gzip-file-as-resource",
+        "github::create_or_update_file",
+        "github::list_pull_requests",
+        "github::get_file_contents",
+        "filesystem::move_file",
+        "github::create_branch",
+        "github::get_pull_request_reviews",
+        "github::get_pull_request_comments",
+        "github::get_pull_request_files",
+        "everything::trigger-long-running-operation",
+        "filesystem::read_multiple_files",
+        "everything::get-sum",
+        "github::get_pull_request_status"
+      ]
+    },
+    {
+      "expected": [
+        "github::create_issue"
+      ],
+      "pipeline": "tfidf_fallback",
+      "query": "帮我登记一个线上故障",
+      "returned": []
+    },
+    {
+      "expected": [
+        "filesystem::read_file"
+      ],
+      "pipeline": "tfidf_fallback",
+      "query": "读取本地配置文件",
+      "returned": []
+    },
+    {
+      "expected": [
+        "github::create_branch"
+      ],
+      "pipeline": "tfidf_fallback",
+      "query": "创建一个新的代码分支",
+      "returned": []
+    },
+    {
+      "expected": [
+        "github::search_code"
+      ],
+      "pipeline": "tfidf_fallback",
+      "query": "在仓库中查找认证实现",
+      "returned": []
+    },
+    {
+      "expected": [
+        "filesystem::search_files"
+      ],
+      "pipeline": "tfidf_fallback",
+      "query": "搜索关于部署的文档",
+      "returned": []
+    },
+    {
+      "expected": [
+        "github::list_commits"
+      ],
+      "pipeline": "tfidf_fallback",
+      "query": "看看提交历史",
+      "returned": []
+    },
+    {
+      "expected": [
+        "everything::trigger-long-running-operation"
+      ],
+      "pipeline": "tfidf_fallback",
+      "query": "simulate a slow operation",
+      "returned": [
+        "everything::trigger-long-running-operation",
+        "everything::simulate-research-query",
+        "filesystem::create_directory",
+        "filesystem::move_file",
+        "filesystem::read_multiple_files"
+      ]
+    },
+    {
+      "expected": [
+        "everything::toggle-simulated-logging"
+      ],
+      "pipeline": "tfidf_fallback",
+      "query": "print a long message to stderr",
+      "returned": [
+        "everything::trigger-long-running-operation",
+        "everything::echo",
+        "everything::get-annotated-message",
+        "everything::get-env",
+        "github::push_files",
+        "github::create_or_update_file",
+        "github::merge_pull_request"
+      ]
+    },
+    {
+      "expected": [
+        "everything::gzip-file-as-resource"
+      ],
+      "pipeline": "tfidf_fallback",
+      "query": "compress a file to make it smaller",
+      "returned": [
+        "everything::gzip-file-as-resource",
+        "filesystem::read_text_file",
+        "filesystem::edit_file",
+        "filesystem::read_file",
+        "github::create_or_update_file",
+        "filesystem::get_file_info",
+        "filesystem::write_file",
+        "filesystem::read_media_file",
+        "github::get_file_contents",
+        "filesystem::read_multiple_files",
+        "filesystem::list_directory",
+        "filesystem::list_directory_with_sizes",
+        "filesystem::directory_tree",
+        "filesystem::move_file"
+      ]
+    },
+    {
+      "expected": [
+        "everything::get-sum"
+      ],
+      "pipeline": "tfidf_fallback",
+      "query": "sum two numbers together",
+      "returned": [
+        "everything::get-sum"
+      ]
+    },
+    {
+      "expected": [
+        "github::create_pull_request"
+      ],
+      "pipeline": "tfidf_fallback",
+      "query": "how do I let teammates see my code changes",
+      "returned": [
+        "github::search_code",
+        "filesystem::edit_file",
+        "github::search_repositories",
+        "github::create_pull_request",
+        "everything::get-annotated-message",
+        "github::update_pull_request_branch",
+        "everything::gzip-file-as-resource"
+      ]
+    }
+  ],
+  "token_measurement": "Use scripts/token_account.py with the selected tokenizer; bytes are not tokens",
+  "tool_count": 53,
+  "top1_accuracy": 0.42105263157894735
+}

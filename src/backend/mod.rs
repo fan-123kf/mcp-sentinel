@@ -13,7 +13,6 @@ use tokio::sync::RwLock;
 use tracing::{info, warn};
 
 pub struct Backend {
-    name: String,
     tools: Vec<Tool>,
     backend_type: BackendType,
 }
@@ -46,7 +45,6 @@ impl BackendManager {
                             backends.write().await.insert(
                                 name.clone(),
                                 Backend {
-                                    name: name.clone(),
                                     tools,
                                     backend_type: BackendType::Stdio(backend),
                                 },
@@ -60,13 +58,15 @@ impl BackendManager {
                 BackendConfig::Http { url, auth } => {
                     match http::HttpBackend::new(url, auth.clone()).await {
                         Ok(backend) => {
+                            backend.initialize().await.with_context(|| {
+                                format!("Handshake failed for HTTP backend {}", name)
+                            })?;
                             let tools = backend.list_tools().await?;
                             info!("Backend {} loaded {} tools", name, tools.len());
 
                             backends.write().await.insert(
                                 name.clone(),
                                 Backend {
-                                    name: name.clone(),
                                     tools,
                                     backend_type: BackendType::Http(backend),
                                 },
@@ -86,6 +86,13 @@ impl BackendManager {
         })
     }
 
+    pub async fn tool_definition(&self, tool_id: &str) -> Option<Tool> {
+        self.list_all_tools()
+            .await
+            .into_iter()
+            .find(|t| t.tool_id == tool_id)
+    }
+
     pub async fn list_all_tools(&self) -> Vec<Tool> {
         let backends = self.backends.read().await;
         let mut all_tools = Vec::new();
@@ -95,7 +102,9 @@ impl BackendManager {
                 let mut tool_with_server = tool.clone();
                 tool_with_server.tool_id = format!("{}::{}", server_name, tool.name);
                 tool_with_server.server_name = Some(server_name.clone());
-                all_tools.push(tool_with_server);
+                if !crate::security::scan_tool(&tool_with_server).blocked {
+                    all_tools.push(tool_with_server);
+                }
             }
         }
 
@@ -143,23 +152,26 @@ impl BackendManager {
 
         let latency_ms = start.elapsed().as_millis() as u64;
 
-        match result {
-            Ok(content) => {
+        let result = match result {
+            Ok(response) => ToolCallResult::from_mcp(response, latency_ms),
+            Err(e) => ToolCallResult::Error {
+                error: e.to_string(),
+                latency_ms,
+            },
+        };
+        match &result {
+            ToolCallResult::Success { .. } => {
                 self.health_manager
                     .record_success(&tool_call.tool_id, latency_ms)
                     .await;
-                Ok(ToolCallResult::Success {
-                    content,
-                    latency_ms,
-                })
             }
-            Err(e) => {
-                self.health_manager.record_failure(&tool_call.tool_id).await;
-                Ok(ToolCallResult::Error {
-                    error: e.to_string(),
-                    latency_ms,
-                })
+            ToolCallResult::Error { .. } => {
+                let category = crate::governance::classify_error(&result).map(|c| format!("{c:?}"));
+                self.health_manager
+                    .record_failure_with_details(&tool_call.tool_id, latency_ms, category)
+                    .await;
             }
         }
+        Ok(result)
     }
 }

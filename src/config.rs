@@ -73,7 +73,45 @@ impl Config {
         let config: Config = toml::from_str(&expanded)
             .with_context(|| format!("Failed to parse config file: {}", path.display()))?;
 
+        config.validate()?;
         Ok(config)
+    }
+
+    /// Reject invalid policies at startup rather than silently misrouting calls.
+    pub fn validate(&self) -> Result<()> {
+        anyhow::ensure!(self.gateway.port > 0, "gateway.port must be non-zero");
+        anyhow::ensure!(
+            matches!(self.routing.strategy.as_str(), "tfidf" | "hybrid"),
+            "routing.strategy must be tfidf or hybrid"
+        );
+        anyhow::ensure!(self.routing.top_k > 0, "routing.top_k must be positive");
+        anyhow::ensure!(
+            (0.0..=1.0).contains(&self.routing.health_weight),
+            "routing.health_weight must be between 0 and 1"
+        );
+        anyhow::ensure!(
+            (0.0..=1.0).contains(&self.health.degraded_score_penalty),
+            "health.degraded_score_penalty must be between 0 and 1"
+        );
+        anyhow::ensure!(
+            self.health.consecutive_failure_limit > 0,
+            "health.consecutive_failure_limit must be positive"
+        );
+        anyhow::ensure!(
+            self.health.zombie_threshold_days > 0,
+            "health.zombie_threshold_days must be positive"
+        );
+        anyhow::ensure!(
+            self.storage.retention_days > 0,
+            "storage.retention_days must be positive"
+        );
+        for name in self.backends.keys() {
+            anyhow::ensure!(
+                !name.is_empty() && !name.contains("::"),
+                "backend names must be non-empty and cannot contain ::"
+            );
+        }
+        Ok(())
     }
 }
 
@@ -119,6 +157,20 @@ impl Default for StorageConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rejects_invalid_routing_policy() {
+        let mut config: Config = toml::from_str(include_str!("../examples/minimal.toml")).unwrap();
+        assert!(config.validate().is_ok());
+        config.routing.health_weight = f64::NAN;
+        assert!(config.validate().is_err());
+        config.routing.health_weight = 0.4;
+        config.routing.strategy = "typo".into();
+        assert!(config.validate().is_err());
+        config.routing.strategy = "tfidf".into();
+        config.routing.top_k = 0;
+        assert!(config.validate().is_err());
+    }
 
     #[test]
     fn test_config_defaults() {

@@ -1,0 +1,10 @@
+{
+  "tiktoken_version": "0.12.0",
+  "backend_sha256": "808d093c7440c037ae2abec1de8c5f7061c14d778260a7d81b9138014ab02e97",
+  "meta_sha256": "a787660e6841d750d0cebc445d4ddab0327cb6ea5e8b5e748a75612d75c286e3",
+  "encoding": "cl100k_base",
+  "backend_tokens": 6950,
+  "meta_tokens": 521,
+  "reduction": 0.9250359712230216,
+  "scope": "serialized initial tool-list definitions only"
+}

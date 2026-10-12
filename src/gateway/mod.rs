@@ -18,7 +18,7 @@ use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 use tracing::{error, info};
 
-mod meta_tools;
+pub(crate) mod meta_tools;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -78,13 +78,17 @@ pub async fn start_gateway(
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 
-    let addr = format!("0.0.0.0:{}", config.gateway.port);
+    let addr = format!("127.0.0.1:{}", config.gateway.port);
     info!("🚀 mcp-sentinel gateway listening on http://{}", addr);
     info!("   MCP endpoint: http://{}/mcp", addr);
     info!("   Health check: http://{}/health", addr);
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async {
+            let _ = tokio::signal::ctrl_c().await;
+        })
+        .await?;
 
     Ok(())
 }
@@ -110,8 +114,13 @@ async fn health_handler(State(state): State<AppState>) -> impl IntoResponse {
     let degraded_count = health_scores.iter().filter(|h| h.degraded).count();
     let zombie_count = health_scores.iter().filter(|h| h.zombie).count();
 
+    let status = if degraded_count > 0 {
+        "degraded"
+    } else {
+        "healthy"
+    };
     Json(json!({
-        "status": "healthy",
+        "status": status,
         "tools": {
             "total": health_scores.len(),
             "healthy": healthy_count,
@@ -126,6 +135,33 @@ async fn mcp_handler(
     Json(request): Json<JsonRpcRequest>,
 ) -> impl IntoResponse {
     info!("Received MCP request: {}", request.method);
+
+    if request.jsonrpc != "2.0" {
+        return (
+            StatusCode::OK,
+            Json(JsonRpcResponse {
+                jsonrpc: "2.0".into(),
+                id: request.id,
+                result: None,
+                error: Some(JsonRpcError {
+                    code: -32600,
+                    message: "jsonrpc must be 2.0".into(),
+                }),
+            }),
+        );
+    }
+
+    if request.id.is_none() && request.method.starts_with("notifications/") {
+        return (
+            StatusCode::NO_CONTENT,
+            Json(JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                id: None,
+                result: None,
+                error: None,
+            }),
+        );
+    }
 
     let result = match request.method.as_str() {
         "initialize" => meta_tools::handle_initialize(&state).await,

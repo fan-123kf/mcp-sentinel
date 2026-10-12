@@ -4,6 +4,7 @@ use std::time::SystemTime;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolHealth {
     pub tool_id: String,
+    pub first_seen: SystemTime,
     pub success_count: u64,
     pub failure_count: u64,
     pub total_latency_ms: u64,
@@ -21,6 +22,7 @@ impl ToolHealth {
     pub fn new(tool_id: String) -> Self {
         Self {
             tool_id,
+            first_seen: SystemTime::now(),
             success_count: 0,
             failure_count: 0,
             total_latency_ms: 0,
@@ -57,7 +59,7 @@ impl ToolHealth {
         };
 
         self.health_score = success_rate * latency_penalty * staleness;
-        self.zombie_score = if self.call_count_7d == 0 { 1.0 } else { 0.0 };
+        self.zombie_score = if self.idle_days() >= 7 { 1.0 } else { 0.0 };
     }
 
     pub fn record_success(&mut self, latency_ms: u64) {
@@ -83,6 +85,15 @@ impl ToolHealth {
         self.consecutive_failures >= threshold
     }
 
+    pub fn idle_days(&self) -> u64 {
+        self.last_call
+            .unwrap_or(self.first_seen)
+            .elapsed()
+            .map(|d| d.as_secs() / 86400)
+            .unwrap_or(0)
+    }
+
+    #[cfg(test)]
     pub fn is_zombie(&self) -> bool {
         self.zombie_score >= 0.9
     }
@@ -165,11 +176,11 @@ mod tests {
     fn test_zombie_detection() {
         let mut health = ToolHealth::new("test::tool".to_string());
 
-        health.call_count_7d = 0;
+        health.first_seen = SystemTime::now() - std::time::Duration::from_secs(8 * 86400);
         health.compute_health_score();
         assert!(health.is_zombie());
 
-        health.call_count_7d = 5;
+        health.record_success(100);
         health.compute_health_score();
         assert!(!health.is_zombie());
     }
