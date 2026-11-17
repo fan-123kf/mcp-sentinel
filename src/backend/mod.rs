@@ -39,16 +39,22 @@ impl BackendManager {
                             backend.initialize().await.with_context(|| {
                                 format!("Handshake failed for stdio backend {}", name)
                             })?;
-                            let tools = backend.list_tools().await?;
-                            info!("Backend {} loaded {} tools", name, tools.len());
-
-                            backends.write().await.insert(
-                                name.clone(),
-                                Backend {
-                                    tools,
-                                    backend_type: BackendType::Stdio(backend),
-                                },
-                            );
+                            match backend.list_tools().await {
+                                Ok(tools) => {
+                                    info!("Backend {} loaded {} tools", name, tools.len());
+                                    backends.write().await.insert(
+                                        name.clone(),
+                                        Backend {
+                                            tools,
+                                            backend_type: BackendType::Stdio(backend),
+                                        },
+                                    );
+                                }
+                                Err(error) => warn!(
+                                    "Failed to discover tools from stdio backend {}: {}",
+                                    name, error
+                                ),
+                            }
                         }
                         Err(e) => {
                             warn!("Failed to initialize stdio backend {}: {}", name, e);
@@ -61,16 +67,22 @@ impl BackendManager {
                             backend.initialize().await.with_context(|| {
                                 format!("Handshake failed for HTTP backend {}", name)
                             })?;
-                            let tools = backend.list_tools().await?;
-                            info!("Backend {} loaded {} tools", name, tools.len());
-
-                            backends.write().await.insert(
-                                name.clone(),
-                                Backend {
-                                    tools,
-                                    backend_type: BackendType::Http(backend),
-                                },
-                            );
+                            match backend.list_tools().await {
+                                Ok(tools) => {
+                                    info!("Backend {} loaded {} tools", name, tools.len());
+                                    backends.write().await.insert(
+                                        name.clone(),
+                                        Backend {
+                                            tools,
+                                            backend_type: BackendType::Http(backend),
+                                        },
+                                    );
+                                }
+                                Err(error) => warn!(
+                                    "Failed to discover tools from HTTP backend {}: {}",
+                                    name, error
+                                ),
+                            }
                         }
                         Err(e) => {
                             warn!("Failed to initialize HTTP backend {}: {}", name, e);

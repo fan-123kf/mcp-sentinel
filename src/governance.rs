@@ -31,38 +31,30 @@ pub enum ErrorCategory {
 }
 
 impl ToolPolicy {
-    /// Authoritative classification from MCP tool annotations
-    /// (readOnlyHint / destructiveHint / idempotentHint). Servers that provide
-    /// annotations know their own side effects better than any name heuristic.
-    pub fn from_annotations(annotations: &Value, _tool_id: &str) -> Option<Self> {
+    /// Apply server annotations as conservative hints. They may make a policy
+    /// stricter, but can never downgrade the local name-based policy.
+    pub fn from_annotations(annotations: &Value, tool_id: &str) -> Option<Self> {
         let obj = annotations.as_object()?;
         let read_only = obj.get("readOnlyHint").and_then(Value::as_bool);
         let destructive = obj.get("destructiveHint").and_then(Value::as_bool);
-
-        match (read_only, destructive) {
-            // Server explicitly claims read-only: trust it (Read, retry-safe).
-            (Some(true), _) => Some(Self {
-                side_effect: SideEffect::Read,
-                confirmation_required: false,
-                retry_safe: true,
-                max_attempts: 2,
-            }),
-            // Server explicitly claims destructive.
-            (_, Some(true)) => Some(Self {
-                side_effect: SideEffect::Destructive,
-                confirmation_required: true,
-                retry_safe: false,
-                max_attempts: 1,
-            }),
-            // Explicitly not read-only and not destructive => mutating (Write).
-            (Some(false), Some(false) | None) => Some(Self {
-                side_effect: SideEffect::Write,
-                confirmation_required: true,
-                retry_safe: false,
-                max_attempts: 1,
-            }),
-            _ => None,
+        if read_only.is_none() && destructive.is_none() {
+            return None;
         }
+
+        let mut policy = Self::infer(tool_id);
+        if destructive == Some(true) {
+            policy.side_effect = SideEffect::Destructive;
+        } else if read_only == Some(false) && policy.side_effect == SideEffect::Read {
+            policy.side_effect = SideEffect::Write;
+        }
+
+        if policy.side_effect != SideEffect::Read {
+            policy.confirmation_required = true;
+            policy.retry_safe = false;
+            policy.max_attempts = 1;
+        }
+
+        Some(policy)
     }
 
     pub fn infer(tool_id: &str) -> Self {
@@ -237,19 +229,20 @@ mod tests {
     }
 
     #[test]
-    fn annotations_override_name_heuristic() {
+    fn annotations_can_raise_but_never_lower_the_policy() {
         use serde_json::json;
 
-        // Server says read-only, but the name contains "delete": annotations win.
+        // A server cannot make a destructive-looking operation safe to retry.
         let p = ToolPolicy::from_annotations(
             &json!({"readOnlyHint": true, "destructiveHint": false}),
             "fs::delete_cache_file",
         )
         .expect("annotations present");
-        assert_eq!(p.side_effect, SideEffect::Read);
-        assert!(p.authorize(false).is_ok());
+        assert_eq!(p.side_effect, SideEffect::Destructive);
+        assert!(!p.retry_safe);
+        assert!(p.authorize(false).is_err());
 
-        // Server says destructive even though the name looks innocent.
+        // A destructive hint escalates a tool even when its name looks innocent.
         let p = ToolPolicy::from_annotations(
             &json!({"readOnlyHint": false, "destructiveHint": true}),
             "fs::sync_data",
@@ -258,12 +251,18 @@ mod tests {
         assert_eq!(p.side_effect, SideEffect::Destructive);
         assert!(p.authorize(false).is_err());
 
-        // Server says mutating but not destructive => Write.
+        // A non-read-only hint escalates an otherwise read-like name to Write.
         let p = ToolPolicy::from_annotations(
             &json!({"readOnlyHint": false, "destructiveHint": false}),
-            "fs::gzip_file_as_resource",
+            "fs::get_resource",
         )
         .expect("annotations present");
+        assert_eq!(p.side_effect, SideEffect::Write);
+        assert!(p.authorize(false).is_err());
+
+        // A read-only hint cannot downgrade an unknown tool name (unknown is Write).
+        let p =
+            ToolPolicy::from_annotations(&json!({"readOnlyHint": true}), "fs::execute").unwrap();
         assert_eq!(p.side_effect, SideEffect::Write);
         assert!(p.authorize(false).is_err());
 

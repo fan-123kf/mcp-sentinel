@@ -37,7 +37,7 @@
 
 递归扫描 description/title/annotations、schema 字符串和键以及完整调用结果，包括 structuredContent 和 isError 内容。规则识别指令覆盖、角色伪造、秘密外传、绕过确认，处理中英文、大小写和部分零宽字符。命中后隔离元数据或阻断输出，诊断不回显攻击正文。
 
-这是规则防护，存在漏报和误报，不能保证识别所有注入，不能撤销已发生的后端副作用。后端应受信任；annotations 不是认证凭据，confirmed 是显式调用标志，不是独立的人类批准证明。网关默认绑定 127.0.0.1，尚不提供入口认证。
+这是规则防护，存在漏报和误报，不能保证识别所有注入，不能撤销已发生的后端副作用。annotations 是不可信提示，只允许提升本地策略严格度；它们不是认证凭据。confirmed 是显式调用标志，不是独立的人类批准证明。网关默认绑定 127.0.0.1；非回环监听需要配置 Bearer token，浏览器 Origin 需要显式加入白名单。远程部署仍应通过 TLS 反向代理。
 
 副作用按 Read/Write/Destructive 分类，明确只读工具才允许自动重试，未知工具按写操作保守处理。isError 进入失败统计。最近 200 条搜索/调用元数据由 VecDeque 保存，拒绝和输出拦截也返回 trace_id。trace 不存调用参数和结果正文，但搜索 query 可能含敏感信息；重启后内存 trace 不保留。
 
@@ -80,7 +80,7 @@ python scripts/token_account.py retrieval-eval.tools.json retrieval-eval.meta.js
 
 评测导出逐查询排名。Recall@5 按全部相关工具计算；MRR@20 取前 20 的首个相关位置；Top-1 为首位命中率。无相关答案的查询不混入这些分母。严格模型模式校验实际执行双路融合与 Cross-Encoder，不把降级结果标为模型指标。
 
-网关提供 POST /mcp 和 GET /health；HTTP 后端当前仅支持 JSON 响应，完整 Streamable HTTP 会话/SSE 兼容性仍需补齐。
+网关入口、HTTP 后端和 stdio 后端现使用 RMCP SDK；HTTP 传输覆盖协议协商、JSON/SSE 响应、通知以及旧协议会话，stdio 使用 SDK 子进程 transport，两种后端的工具发现均自动遍历分页。已添加模拟 Agent → 网关 → HTTP 后端的端到端测试，但未能在当前 Windows 环境构建运行；Hermes 与真实远端 MCP Server 的端到端验收仍未完成。网关暂不透传远端客户端输入请求（elicitation）及任务结果（tasks）。
 
 ## 可使用的描述
 

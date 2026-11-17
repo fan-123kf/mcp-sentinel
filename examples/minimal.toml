@@ -5,6 +5,9 @@
 port = 3000
 web_ui = false
 log_level = "info"
+allowed_hosts = ["localhost", "127.0.0.1", "::1"]
+bind_address = "127.0.0.1"
+allowed_origins = []
 
 [routing]
 strategy = "tfidf"

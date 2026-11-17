@@ -5,6 +5,12 @@
 port = 3000
 web_ui = true
 log_level = "info"
+bind_address = "127.0.0.1"
+# Set a non-empty token before changing bind_address to a non-loopback interface.
+# auth_token = "${SENTINEL_GATEWAY_TOKEN}"
+# Browser-based MCP clients require an explicit Origin allowlist. Native clients omit Origin.
+allowed_origins = []
+allowed_hosts = ["localhost", "127.0.0.1", "::1"]
 
 [routing]
 strategy = "tfidf"           # "tfidf" | "semantic" (future: embedding)

@@ -2,6 +2,7 @@
 name = "mcp-sentinel"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.88"
 authors = ["MCP Sentinel Contributors"]
 description = "Intelligent MCP gateway with health-driven adaptive routing"
 license = "MIT"
@@ -17,6 +18,7 @@ tower-http = { version = "0.5", features = ["fs", "trace", "cors"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 toml = "0.8"
+url = "2.5"
 
 # Shell expansion for config
 shellexpand = "3.1"
@@ -38,8 +40,8 @@ chrono = { version = "0.4", features = ["serde"] }
 # Process management for stdio backends
 async-process = "2.3"
 
-# HTTP client for HTTP backends
-reqwest = { version = "0.12", features = ["json", "stream"] }
+# MCP protocol types and Streamable HTTP transports
+rmcp = { version = "3.10", default-features = false, features = ["server", "transport-child-process", "transport-streamable-http-server", "transport-streamable-http-client-reqwest"] }
 
 # CLI
 clap = { version = "4.5", features = ["derive", "env"] }

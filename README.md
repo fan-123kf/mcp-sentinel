@@ -26,7 +26,7 @@ flowchart LR
     G --> S[Search · TF-IDF / optional Hybrid]
     S --> H[Health-aware ranking]
     G --> P[Policy · confirmation / safe retry]
-    P --> B[Backend Manager · stdio / HTTP JSON]
+    P --> B[Backend Manager · MCP stdio / Streamable HTTP]
     B --> M[MCP Servers]
     M --> O[Output rule scan]
     O --> A
@@ -79,18 +79,7 @@ command = "cmd"
 args = ["/c", "npx", "-y", "@modelcontextprotocol/server-filesystem", "."]
 ```
 
-通过 HTTP JSON-RPC 搜索：
-
-```powershell
-$request = @{
-    jsonrpc = '2.0'; id = 1; method = 'tools/call'
-    params = @{
-        name = 'gateway_search_tools'
-        arguments = @{ query = 'read a file'; top_k = 3 }
-    }
-} | ConvertTo-Json -Depth 8
-Invoke-RestMethod http://127.0.0.1:3000/mcp -Method Post -ContentType 'application/json' -Body $request
-```
+MCP 客户端应将 `http://127.0.0.1:3000/mcp` 配置为 **Streamable HTTP** server。客户端负责初始化协商、保存会话头并调用六个网关元工具；不要用单次裸 JSON-RPC POST 代替 MCP HTTP 客户端，因为该接口还需要处理协议版本、`Accept`、会话和 SSE 响应。
 
 调用时使用搜索返回的 `tool_id` 和 schema。写入示例：
 
@@ -141,9 +130,11 @@ cargo run --locked --features models -- eval --require-models --output retrieval
 | 规则扫描 | 可解释、可测试，存在误报和漏报，不能完整防御提示注入 |
 | 有界内存 trace | 控制空间占用，不存参数与输出正文；query 仍可能敏感，重启不保留 trace |
 
-后端 annotations 是受信任服务器的提示，不是认证凭据。`confirmed: true` 是客户端标志，不能单独证明人类授权。网关绑定 `127.0.0.1`，尚无入口认证；HTTP 后端仅支持 JSON 响应，完整 Streamable HTTP 会话 / SSE 支持仍待补齐。`web_ui` 是预留配置，当前没有 Web UI。
+后端 annotations 是不可信提示，只能提高本地副作用策略的严格程度，不能把本地判定为写/删除的工具降为只读。`confirmed: true` 是客户端标志，不能单独证明人类授权。网关入口、HTTP 后端和 stdio 后端现使用 RMCP SDK；HTTP 两端使用 Streamable HTTP，stdio 通过子进程传输，工具目录均自动遍历分页。已添加模拟 Agent → 网关 → HTTP 后端的端到端测试，但尚未在本机运行成功；真实 Hermes 与 GitHub MCP 的端到端兼容性尚未验证。客户端输入请求和后台任务结果目前不会从后端透传。`web_ui` 是预留配置，当前没有 Web UI。
 
-下一步优先补齐协议兼容与认证、扩大带标注评测集，并在完整模型环境下报告准确率和延迟。
+网关默认绑定 `127.0.0.1`。`gateway.bind_address` 可配置为 IP 地址；绑定非回环地址时必须配置非空 `gateway.auth_token`，客户端需发送 `Authorization: Bearer <token>`。`gateway.allowed_hosts` 控制 MCP HTTP Host 校验，公网部署时应列出实际域名；浏览器客户端若发送 `Origin`，必须将其加入 `gateway.allowed_origins`。原生客户端通常不发送 `Origin`。远程部署仍应使用 TLS 反向代理，且不要把 token 写入版本控制。
+
+下一步优先完成真实 Host/Server 端到端兼容验证、补齐远端任务与输入请求透传及出站 URL 安全校验，再扩大带标注评测集并在完整模型环境下报告准确率和延迟。
 
 ## 阅读代码与开发
 
